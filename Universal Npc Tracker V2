@@ -4,410 +4,378 @@ local UserInputService = game:GetService("UserInputService")
 local Workspace = game:GetService("Workspace")
 local LocalPlayer = Players.LocalPlayer
 
+-- Find Drawing library
 local Drawing = nil
-local success, result = pcall(function()
-    if Drawing then return Drawing end
-    if getgenv then
-        local genv = getgenv()
-        if genv.Drawing then return genv.Drawing end
-    end
-    return nil
-end)
-
-if success and result then
-    Drawing = result
-else
+if getgenv and getgenv().Drawing then
+    Drawing = getgenv().Drawing
+end
+if not Drawing and _G.Drawing then
+    Drawing = _G.Drawing
+end
+if not Drawing and Drawing ~= nil then
+    -- Drawing is already a global in some executors
+elseif not Drawing then
     pcall(function()
-        if _G.Drawing then Drawing = _G.Drawing end
+        Drawing = Drawing
     end)
 end
-
 if not Drawing then
-    warn("[Radar] Drawing library not found. Attempting raw global access...")
-    pcall(function()
-        Drawing = Drawing or nil
-    end)
-end
-
-if not Drawing then
-    warn("[Radar] Drawing library is not available. Please use a supported executor.")
+    print("[Radar] ERROR: Drawing library not found. Use an executor with Drawing support.")
     return
 end
 
-local CONFIG = {
-    RADAR_SIZE = 140,
-    RADAR_RADIUS = 70,
-    MAX_TRACKING_RADIUS = 500,
-    DEFAULT_RADIUS = 150,
-    SLIDER_WIDTH = 160,
-    SLIDER_HEIGHT = 6,
-    THUMB_RADIUS = 10,
-    LOCK_SIZE = 22,
-    NPC_DOT_RADIUS = 4,
-    NPC_DIR_LINE_LENGTH = 8,
-    PLAYER_ARROW_SIZE = 10,
-    MAX_DISPLAYED_NPCS = 60,
-    CLOSE_DISTANCE_RATIO = 0.4,
-    COLOR_RED = Color3.fromRGB(255, 55, 55),
-    COLOR_ORANGE = Color3.fromRGB(255, 160, 35),
-    COLOR_PLAYER = Color3.fromRGB(0, 220, 100),
-    COLOR_COMPASS = Color3.fromRGB(200, 200, 200),
-    COLOR_BORDER = Color3.fromRGB(160, 160, 160),
-    COLOR_BACKGROUND = Color3.fromRGB(20, 20, 25),
-    COLOR_SLIDER_TRACK = Color3.fromRGB(60, 60, 70),
-    COLOR_SLIDER_THUMB = Color3.fromRGB(100, 180, 255),
-    COLOR_LOCK_UNLOCKED = Color3.fromRGB(80, 200, 80),
-    COLOR_LOCK_LOCKED = Color3.fromRGB(220, 80, 80),
-    COLOR_TEXT = Color3.fromRGB(255, 255, 255),
-    VISIBLE = true,
-}
+-- Config
+local RADAR_SIZE = 140
+local RADAR_RADIUS = 70
+local MAX_RADIUS = 500
+local DEFAULT_RADIUS = 150
+local SLIDER_W = 160
+local SLIDER_H = 6
+local THUMB_R = 10
+local LOCK_SIZE = 22
+local DOT_R = 4
+local DIR_LEN = 8
+local ARROW_SIZE = 10
+local MAX_NPCS = 60
+local CLOSE_RATIO = 0.4
 
-local state = {
-    currentRadius = CONFIG.DEFAULT_RADIUS,
-    locked = false,
-    dragging = false,
-    draggingLock = false,
-    radarCenter = Vector2.zero,
-    sliderStartX = 0,
-    sliderEndX = 0,
-    sliderY = 0,
-}
+-- Colors
+local COL_RED = Color3.fromRGB(255, 55, 55)
+local COL_ORANGE = Color3.fromRGB(255, 160, 35)
+local COL_PLAYER = Color3.fromRGB(0, 220, 100)
+local COL_COMPASS = Color3.fromRGB(200, 200, 200)
+local COL_BORDER = Color3.fromRGB(160, 160, 160)
+local COL_BG = Color3.fromRGB(20, 20, 25)
+local COL_TRACK = Color3.fromRGB(60, 60, 70)
+local COL_THUMB = Color3.fromRGB(100, 180, 255)
+local COL_UNLOCK = Color3.fromRGB(80, 200, 80)
+local COL_LOCK = Color3.fromRGB(220, 80, 80)
+local COL_TEXT = Color3.fromRGB(255, 255, 255)
+local COL_GOLD = Color3.fromRGB(255, 220, 100)
+local COL_GRAY = Color3.fromRGB(150, 150, 150)
+local COL_THUMB_LOCKED = Color3.fromRGB(120, 120, 130)
+local COL_THUMBB_LOCKED = Color3.fromRGB(160, 160, 160)
+local COL_TEXT_LOCKED = Color3.fromRGB(180, 180, 180)
+local COL_WHITE = Color3.fromRGB(255, 255, 255)
 
-local function updateRadarPosition()
-    local cam = Workspace.CurrentCamera
-    if not cam then return end
-    local viewport = cam.ViewportSize
-    state.radarCenter = Vector2.new(
-        viewport.X - CONFIG.RADAR_RADIUS - 30,
-        CONFIG.RADAR_RADIUS + 40
-    )
-    state.sliderY = state.radarCenter.Y + CONFIG.RADAR_RADIUS + 20
-    state.sliderStartX = state.radarCenter.X - CONFIG.SLIDER_WIDTH / 2
-    state.sliderEndX = state.radarCenter.X + CONFIG.SLIDER_WIDTH / 2
-end
-updateRadarPosition()
+-- State
+local currentRadius = DEFAULT_RADIUS
+local locked = false
+local dragging = false
+local visible = true
+local radarCX, radarCY = 0, 0
+local sliderStartX, sliderEndX, sliderY = 0, 0, 0
 
-local function createDrawing(dtype, properties)
-    local success, obj = pcall(function()
+-- Helpers
+local function createDraw(dtype, props)
+    local ok, obj = pcall(function()
         return Drawing.new(dtype)
     end)
-    if not success or not obj then
+    if not ok or not obj then
         return nil
     end
-    for k, v in pairs(properties) do
-        pcall(function() obj[k] = v end)
+    for k, v in pairs(props) do
+        pcall(function()
+            obj[k] = v
+        end)
     end
     return obj
 end
 
-local bgCircle = createDrawing("Circle", {
-    Position = state.radarCenter,
-    Radius = CONFIG.RADAR_RADIUS,
-    Color = CONFIG.COLOR_BACKGROUND,
+local function updateRadarPos()
+    local cam = Workspace.CurrentCamera
+    if not cam then return end
+    local vp = cam.ViewportSize
+    radarCX = vp.X - RADAR_RADIUS - 30
+    radarCY = RADAR_RADIUS + 40
+    sliderY = radarCY + RADAR_RADIUS + 20
+    sliderStartX = radarCX - SLIDER_W / 2
+    sliderEndX = radarCX + SLIDER_W / 2
+end
+updateRadarPos()
+
+-- Radar circle
+local bgCircle = createDraw("Circle", {
+    Position = Vector2.new(radarCX, radarCY),
+    Radius = RADAR_RADIUS,
+    Color = COL_BG,
     Filled = true,
     Transparency = 0.55,
-    Visible = CONFIG.VISIBLE,
+    Visible = true,
     NumSides = 64,
 })
 
-local borderCircle = createDrawing("Circle", {
-    Position = state.radarCenter,
-    Radius = CONFIG.RADAR_RADIUS,
-    Color = CONFIG.COLOR_BORDER,
+local borderCircle = createDraw("Circle", {
+    Position = Vector2.new(radarCX, radarCY),
+    Radius = RADAR_RADIUS,
+    Color = COL_BORDER,
     Filled = false,
     Thickness = 2.5,
     Transparency = 1,
-    Visible = CONFIG.VISIBLE,
+    Visible = true,
     NumSides = 64,
 })
 
-local compassLabels = {}
-local compassPositions = {
-    {text = "N", angle = 0},
-    {text = "S", angle = math.pi},
-    {text = "E", angle = math.pi / 2},
-    {text = "W", angle = -math.pi / 2},
+-- Compass
+local compassItems = {}
+local compassDefs = {
+    { text = "N", angle = 0 },
+    { text = "S", angle = math.pi },
+    { text = "E", angle = math.pi / 2 },
+    { text = "W", angle = -math.pi / 2 },
 }
-
-for _, cp in ipairs(compassPositions) do
-    local lbl = createDrawing("Text", {
-        Text = cp.text,
+for _, cd in ipairs(compassDefs) do
+    local lbl = createDraw("Text", {
+        Text = cd.text,
         Size = 16,
-        Color = CONFIG.COLOR_COMPASS,
+        Color = COL_COMPASS,
         Center = true,
         Outline = true,
-        Visible = CONFIG.VISIBLE,
+        Visible = true,
         Transparency = 1,
     })
     if lbl then
-        cp.label = lbl
-        table.insert(compassLabels, {label = lbl, angle = cp.angle})
+        table.insert(compassItems, { label = lbl, angle = cd.angle })
     end
 end
 
-local compassTicks = {}
+local tickLines = {}
 for i = 0, 35 do
     if i % 9 ~= 0 then
         local angle = (i / 36) * math.pi * 2
-        local tick = createDrawing("Line", {
-            Color = CONFIG.COLOR_COMPASS,
+        local line = createDraw("Line", {
+            Color = COL_COMPASS,
             Thickness = 1,
             Transparency = 0.7,
-            Visible = CONFIG.VISIBLE,
+            Visible = true,
         })
-        if tick then
-            table.insert(compassTicks, {line = tick, angle = angle})
+        if line then
+            table.insert(tickLines, { line = line, angle = angle })
         end
     end
 end
 
-local playerArrowLines = {}
+-- Player arrow (3 lines)
+local arrowLines = {}
 for _ = 1, 3 do
-    local line = createDrawing("Line", {
-        Color = CONFIG.COLOR_PLAYER,
+    local line = createDraw("Line", {
+        Color = COL_PLAYER,
         Thickness = 2.5,
         Transparency = 1,
-        Visible = CONFIG.VISIBLE,
+        Visible = true,
     })
     if line then
-        table.insert(playerArrowLines, line)
+        table.insert(arrowLines, line)
     end
 end
 
-local playerDot = createDrawing("Circle", {
-    Position = state.radarCenter,
+local playerDot = createDraw("Circle", {
+    Position = Vector2.new(radarCX, radarCY),
     Radius = 3,
-    Color = CONFIG.COLOR_PLAYER,
+    Color = COL_PLAYER,
     Filled = true,
     Transparency = 1,
-    Visible = CONFIG.VISIBLE,
+    Visible = true,
     NumSides = 12,
 })
 
-local npcDotPool = {}
-local npcDirLinePool = {}
-local npcTextPool = {}
-for i = 1, CONFIG.MAX_DISPLAYED_NPCS do
-    local dot = createDrawing("Circle", {
-        Radius = CONFIG.NPC_DOT_RADIUS,
+-- NPC pools
+local npcDots = {}
+local npcLines = {}
+local npcTexts = {}
+for _ = 1, MAX_NPCS do
+    local dot = createDraw("Circle", {
+        Radius = DOT_R,
         Filled = true,
         Transparency = 1,
         Visible = false,
         NumSides = 12,
     })
-    if dot then table.insert(npcDotPool, dot) end
+    if dot then table.insert(npcDots, dot) end
 
-    local dirLine = createDrawing("Line", {
+    local line = createDraw("Line", {
         Thickness = 1.5,
         Transparency = 0.8,
         Visible = false,
     })
-    if dirLine then table.insert(npcDirLinePool, dirLine) end
+    if line then table.insert(npcLines, line) end
 
-    local txt = createDrawing("Text", {
+    local txt = createDraw("Text", {
         Size = 12,
         Center = true,
         Outline = true,
         Visible = false,
         Transparency = 1,
     })
-    if txt then table.insert(npcTextPool, txt) end
+    if txt then table.insert(npcTexts, txt) end
 end
 
-local sliderTrack = createDrawing("Line", {
-    From = Vector2.new(state.sliderStartX, state.sliderY),
-    To = Vector2.new(state.sliderEndX, state.sliderY),
-    Color = CONFIG.COLOR_SLIDER_TRACK,
-    Thickness = CONFIG.SLIDER_HEIGHT,
+-- Slider
+local sliderTrack = createDraw("Line", {
+    From = Vector2.new(sliderStartX, sliderY),
+    To = Vector2.new(sliderEndX, sliderY),
+    Color = COL_TRACK,
+    Thickness = SLIDER_H,
     Transparency = 1,
-    Visible = CONFIG.VISIBLE,
+    Visible = true,
 })
 
-local sliderThumb = createDrawing("Circle", {
-    Radius = CONFIG.THUMB_RADIUS,
-    Color = CONFIG.COLOR_SLIDER_THUMB,
+local sliderThumb = createDraw("Circle", {
+    Radius = THUMB_R,
+    Color = COL_THUMB,
     Filled = true,
     Transparency = 1,
-    Visible = CONFIG.VISIBLE,
+    Visible = true,
     NumSides = 16,
 })
 
-local sliderThumbBorder = createDrawing("Circle", {
-    Radius = CONFIG.THUMB_RADIUS + 1,
-    Color = Color3.fromRGB(255, 255, 255),
+local sliderThumbB = createDraw("Circle", {
+    Radius = THUMB_R + 1,
+    Color = COL_WHITE,
     Filled = false,
     Thickness = 1.5,
     Transparency = 1,
-    Visible = CONFIG.VISIBLE,
+    Visible = true,
     NumSides = 16,
 })
 
-local lockBg = createDrawing("Square", {
-    Size = Vector2.new(CONFIG.LOCK_SIZE, CONFIG.LOCK_SIZE),
-    Color = CONFIG.COLOR_LOCK_UNLOCKED,
+-- Lock button
+local lockBg = createDraw("Square", {
+    Size = Vector2.new(LOCK_SIZE, LOCK_SIZE),
+    Color = COL_UNLOCK,
     Filled = true,
     Transparency = 1,
-    Visible = CONFIG.VISIBLE,
+    Visible = true,
 })
 
-local lockBorder = createDrawing("Square", {
-    Size = Vector2.new(CONFIG.LOCK_SIZE + 2, CONFIG.LOCK_SIZE + 2),
+local lockBorder = createDraw("Square", {
+    Size = Vector2.new(LOCK_SIZE + 2, LOCK_SIZE + 2),
     Color = Color3.fromRGB(200, 200, 200),
     Filled = false,
     Thickness = 1.5,
     Transparency = 1,
-    Visible = CONFIG.VISIBLE,
+    Visible = true,
 })
 
-local lockText = createDrawing("Text", {
+local lockText = createDraw("Text", {
     Text = "U",
     Size = 14,
-    Color = Color3.fromRGB(255, 255, 255),
+    Color = COL_WHITE,
     Center = true,
     Outline = true,
     Transparency = 1,
-    Visible = CONFIG.VISIBLE,
+    Visible = true,
 })
 
-local radiusText = createDrawing("Text", {
-    Text = "Radius: 150",
+-- Info texts
+local radiusText = createDraw("Text", {
+    Text = "Radius: " .. DEFAULT_RADIUS .. "m",
     Size = 14,
-    Color = CONFIG.COLOR_TEXT,
+    Color = COL_TEXT,
     Center = true,
     Outline = true,
     Transparency = 1,
-    Visible = CONFIG.VISIBLE,
+    Visible = true,
 })
 
-local titleText = createDrawing("Text", {
+local titleText = createDraw("Text", {
     Text = "NPC RADAR",
     Size = 10,
-    Color = Color3.fromRGB(150, 150, 150),
+    Color = COL_GRAY,
     Center = true,
     Outline = false,
     Transparency = 1,
-    Visible = CONFIG.VISIBLE,
+    Visible = true,
 })
 
-local function getPlayerHeading()
+-- Functions
+local function getCamHeading()
     local cam = Workspace.CurrentCamera
     if not cam then return 0 end
-    local cf = cam.CFrame
-    local look = cf.LookVector
-    return math.atan2(look.X, look.Z)
+    local lv = cam.CFrame.LookVector
+    return math.atan2(lv.X, lv.Z)
 end
 
-local function worldToRadar(worldPos, playerPos, heading, radius)
+local function worldToRadar(worldPos, playerPos, radius)
     local dx = worldPos.X - playerPos.X
     local dz = worldPos.Z - playerPos.Z
     local dist = math.sqrt(dx * dx + dz * dz)
-    local scale = CONFIG.RADAR_RADIUS / radius
-    local scaledDist = dist * scale
-    local clampedDist = math.min(scaledDist, CONFIG.RADAR_RADIUS - CONFIG.NPC_DOT_RADIUS - 2)
-
     if dist < 0.01 then
-        return state.radarCenter, 0, 0, 0
+        return Vector2.new(radarCX, radarCY), 0
     end
-
-    local worldAngle = math.atan2(dx, dz)
-    local sx = state.radarCenter.X + math.sin(worldAngle) * clampedDist
-    local sy = state.radarCenter.Y - math.cos(worldAngle) * clampedDist
-
-    return Vector2.new(sx, sy), dist, worldAngle, clampedDist
+    local scale = RADAR_RADIUS / radius
+    local scaled = dist * scale
+    local clamped = math.min(scaled, RADAR_RADIUS - DOT_R - 2)
+    local angle = math.atan2(dx, dz)
+    local sx = radarCX + math.sin(angle) * clamped
+    local sy = radarCY - math.cos(angle) * clamped
+    return Vector2.new(sx, sy), dist
 end
 
-local function isOnSliderThumb(pos)
-    if not sliderThumb.Visible then return false end
-    local tp = sliderThumb.Position
-    local dx = pos.X - tp.X
-    local dy = pos.Y - tp.Y
-    return (dx * dx + dy * dy) <= (CONFIG.THUMB_RADIUS + 6) ^ 2
-end
-
-local function isOnSliderTrack(pos)
-    if not sliderTrack.Visible then return false end
-    return pos.X >= state.sliderStartX - 8
-        and pos.X <= state.sliderEndX + 8
-        and math.abs(pos.Y - state.sliderY) <= 14
-end
-
-local function isOnLockButton(pos)
-    if not lockBg.Visible then return false end
-    local lockPos = lockBg.Position
-    local halfSize = CONFIG.LOCK_SIZE / 2 + 6
-    return math.abs(pos.X - lockPos.X) <= halfSize
-        and math.abs(pos.Y - lockPos.Y) <= halfSize
-end
-
-local function sliderPosToRadius(x)
-    local ratio = (x - state.sliderStartX) / CONFIG.SLIDER_WIDTH
+local function sliderXtoRadius(x)
+    local ratio = (x - sliderStartX) / SLIDER_W
     ratio = math.clamp(ratio, 0, 1)
-    return math.floor(1 + ratio * (CONFIG.MAX_TRACKING_RADIUS - 1))
+    return math.floor(1 + ratio * (MAX_RADIUS - 1))
 end
 
-local function radiusToSliderX(radius)
-    local ratio = (radius - 1) / (CONFIG.MAX_TRACKING_RADIUS - 1)
-    return state.sliderStartX + ratio * CONFIG.SLIDER_WIDTH
+local function radiusToSliderX(r)
+    local ratio = (r - 1) / (MAX_RADIUS - 1)
+    return sliderStartX + ratio * SLIDER_W
 end
 
-local function updateSliderVisuals()
-    local thumbX = radiusToSliderX(state.currentRadius)
-    local thumbPos = Vector2.new(thumbX, state.sliderY)
+-- Update visuals
+local function updateSlider()
+    local tx = radiusToSliderX(currentRadius)
+    local tp = Vector2.new(tx, sliderY)
     if sliderThumb then
-        sliderThumb.Position = thumbPos
-        sliderThumb.Color = state.locked
-            and Color3.fromRGB(120, 120, 130)
-            or CONFIG.COLOR_SLIDER_THUMB
+        sliderThumb.Position = tp
+        sliderThumb.Color = locked and COL_THUMB_LOCKED or COL_THUMB
     end
-    if sliderThumbBorder then
-        sliderThumbBorder.Position = thumbPos
-        sliderThumbBorder.Color = state.locked
-            and Color3.fromRGB(160, 160, 160)
-            or Color3.fromRGB(255, 255, 255)
+    if sliderThumbB then
+        sliderThumbB.Position = tp
+        sliderThumbB.Color = locked and COL_THUMBB_LOCKED or COL_WHITE
     end
     if radiusText then
-        radiusText.Text = "Radius: " .. state.currentRadius .. "m"
-        radiusText.Position = Vector2.new(state.radarCenter.X, state.sliderY + 18)
-        radiusText.Color = state.locked
-            and Color3.fromRGB(180, 180, 180)
-            or CONFIG.COLOR_TEXT
+        radiusText.Text = "Radius: " .. currentRadius .. "m"
+        radiusText.Position = Vector2.new(radarCX, sliderY + 18)
+        radiusText.Color = locked and COL_TEXT_LOCKED or COL_TEXT
     end
 end
 
-local function updateLockVisuals()
-    local lockCenter = Vector2.new(state.sliderEndX + CONFIG.LOCK_SIZE / 2 + 12, state.sliderY)
+local function updateLock()
+    local lcx = sliderEndX + LOCK_SIZE / 2 + 12
+    local lcy = sliderY
+    local lcp = Vector2.new(lcx, lcy)
     if lockBg then
-        lockBg.Position = lockCenter
-        lockBg.Color = state.locked and CONFIG.COLOR_LOCK_LOCKED or CONFIG.COLOR_LOCK_UNLOCKED
+        lockBg.Position = lcp
+        lockBg.Color = locked and COL_LOCK or COL_UNLOCK
     end
     if lockBorder then
-        lockBorder.Position = lockCenter
+        lockBorder.Position = lcp
     end
     if lockText then
-        lockText.Position = lockCenter
-        lockText.Text = state.locked and "L" or "U"
+        lockText.Position = lcp
+        lockText.Text = locked and "L" or "U"
     end
 end
 
 local function updateCompass()
-    for _, entry in ipairs(compassLabels) do
-        if entry.label then
-            local screenAngle = entry.angle
-            local lx = state.radarCenter.X + math.sin(screenAngle) * (CONFIG.RADAR_RADIUS + 12)
-            local ly = state.radarCenter.Y - math.cos(screenAngle) * (CONFIG.RADAR_RADIUS + 12)
-            entry.label.Position = Vector2.new(lx, ly)
-            entry.label.Color = (entry.angle == 0) and Color3.fromRGB(255, 220, 100) or CONFIG.COLOR_COMPASS
+    for _, item in ipairs(compassItems) do
+        if item.label then
+            local lx = radarCX + math.sin(item.angle) * (RADAR_RADIUS + 12)
+            local ly = radarCY - math.cos(item.angle) * (RADAR_RADIUS + 12)
+            item.label.Position = Vector2.new(lx, ly)
+            item.label.Color = (item.angle == 0) and COL_GOLD or COL_COMPASS
         end
     end
-
-    for _, tick in ipairs(compassTicks) do
+    for _, tick in ipairs(tickLines) do
         if tick.line then
-            local innerR = CONFIG.RADAR_RADIUS - 6
-            local outerR = CONFIG.RADAR_RADIUS - 2
-            local fx = state.radarCenter.X + math.sin(tick.angle) * innerR
-            local fy = state.radarCenter.Y - math.cos(tick.angle) * innerR
-            local tx = state.radarCenter.X + math.sin(tick.angle) * outerR
-            local ty = state.radarCenter.Y - math.cos(tick.angle) * outerR
+            local ir = RADAR_RADIUS - 6
+            local ora = RADAR_RADIUS - 2
+            local fx = radarCX + math.sin(tick.angle) * ir
+            local fy = radarCY - math.cos(tick.angle) * ir
+            local tx = radarCX + math.sin(tick.angle) * ora
+            local ty = radarCY - math.cos(tick.angle) * ora
             tick.line.From = Vector2.new(fx, fy)
             tick.line.To = Vector2.new(tx, ty)
         end
@@ -415,40 +383,29 @@ local function updateCompass()
 end
 
 local function updatePlayerArrow()
-    local heading = getPlayerHeading()
-    local cx = state.radarCenter.X
-    local cy = state.radarCenter.Y
-    local arrowSize = CONFIG.PLAYER_ARROW_SIZE
-
-    local tipX = cx + math.sin(heading) * arrowSize
-    local tipY = cy - math.cos(heading) * arrowSize
-
-    local baseAngle1 = heading + math.pi * 0.75
-    local baseAngle2 = heading - math.pi * 0.75
-    local baseSize = arrowSize * 0.65
-
-    local blX = cx + math.sin(baseAngle1) * baseSize
-    local blY = cy - math.cos(baseAngle1) * baseSize
-    local brX = cx + math.sin(baseAngle2) * baseSize
-    local brY = cy - math.cos(baseAngle2) * baseSize
-
-    local tip = Vector2.new(tipX, tipY)
-    local bl = Vector2.new(blX, blY)
-    local br = Vector2.new(brX, brY)
-
-    local lineDefs = {
-        {from = tip, to = bl},
-        {from = tip, to = br},
-        {from = bl, to = br},
+    local heading = getCamHeading()
+    local cx, cy = radarCX, radarCY
+    local tipX = cx + math.sin(heading) * ARROW_SIZE
+    local tipY = cy - math.cos(heading) * ARROW_SIZE
+    local ba1 = heading + math.pi * 0.75
+    local ba2 = heading - math.pi * 0.75
+    local bs = ARROW_SIZE * 0.65
+    local blX = cx + math.sin(ba1) * bs
+    local blY = cy - math.cos(ba1) * bs
+    local brX = cx + math.sin(ba2) * bs
+    local brY = cy - math.cos(ba2) * bs
+    local points = {
+        Vector2.new(tipX, tipY),
+        Vector2.new(blX, blY),
+        Vector2.new(brX, brY),
     }
-
-    for i, line in ipairs(playerArrowLines) do
-        if line and lineDefs[i] then
-            line.From = lineDefs[i].from
-            line.To = lineDefs[i].to
+    local pairs = { {1, 2}, {1, 3}, {2, 3} }
+    for i, line in ipairs(arrowLines) do
+        if line and pairs[i] then
+            line.From = points[pairs[i][1]]
+            line.To = points[pairs[i][2]]
         end
     end
-
     if playerDot then
         playerDot.Position = Vector2.new(cx, cy)
     end
@@ -457,169 +414,163 @@ end
 local function getNPCs()
     local npcs = {}
     local seen = {}
-
     local playerChars = {}
-    for _, player in ipairs(Players:GetPlayers()) do
-        if player.Character then
-            playerChars[player.Character] = true
+    for _, p in ipairs(Players:GetPlayers()) do
+        if p.Character then
+            playerChars[p.Character] = true
         end
     end
-
-    for _, descendant in ipairs(Workspace:GetDescendants()) do
-        if descendant:IsA("Humanoid") then
-            local model = descendant.Parent
+    for _, obj in ipairs(Workspace:GetDescendants()) do
+        if obj:IsA("Humanoid") then
+            local model = obj.Parent
             if not model or not model:IsA("Model") then
                 model = model and model.Parent
-                if not model or not model:IsA("Model") then
-                    goto continue
-                end
             end
-
+            if not model or not model:IsA("Model") then
+                goto nextNpc
+            end
             if playerChars[model] then
-                goto continue
+                goto nextNpc
             end
-
             if seen[model] then
-                goto continue
+                goto nextNpc
             end
             seen[model] = true
-
-            local rootPart = model:FindFirstChild("HumanoidRootPart")
+            local root = model:FindFirstChild("HumanoidRootPart")
                 or model:FindFirstChild("Torso")
                 or model.PrimaryPart
-
-            if rootPart then
-                table.insert(npcs, {
-                    model = model,
-                    humanoid = descendant,
-                    rootPart = rootPart,
-                })
+            if root then
+                table.insert(npcs, { model = model, humanoid = obj, root = root })
             end
-
-            ::continue::
+            ::nextNpc::
         end
     end
-
     return npcs
 end
 
-local function updateNPCDisplay()
-    local playerChar = LocalPlayer.Character
-    if not playerChar then
-        for i = 1, CONFIG.MAX_DISPLAYED_NPCS do
-            if npcDotPool[i] then npcDotPool[i].Visible = false end
-            if npcDirLinePool[i] then npcDirLinePool[i].Visible = false end
-            if npcTextPool[i] then npcTextPool[i].Visible = false end
+local function updateNPCs()
+    local char = LocalPlayer.Character
+    if not char then
+        for i = 1, MAX_NPCS do
+            if npcDots[i] then npcDots[i].Visible = false end
+            if npcLines[i] then npcLines[i].Visible = false end
+            if npcTexts[i] then npcTexts[i].Visible = false end
         end
         return
     end
-
-    local playerRoot = playerChar:FindFirstChild("HumanoidRootPart") or playerChar.PrimaryPart
-    if not playerRoot then
-        for i = 1, CONFIG.MAX_DISPLAYED_NPCS do
-            if npcDotPool[i] then npcDotPool[i].Visible = false end
-            if npcDirLinePool[i] then npcDirLinePool[i].Visible = false end
-            if npcTextPool[i] then npcTextPool[i].Visible = false end
+    local root = char:FindFirstChild("HumanoidRootPart") or char.PrimaryPart
+    if not root then
+        for i = 1, MAX_NPCS do
+            if npcDots[i] then npcDots[i].Visible = false end
+            if npcLines[i] then npcLines[i].Visible = false end
+            if npcTexts[i] then npcTexts[i].Visible = false end
         end
         return
     end
-
-    local playerPos = playerRoot.Position
-    local heading = getPlayerHeading()
-    local radius = state.currentRadius
-    local closeThreshold = radius * CONFIG.CLOSE_DISTANCE_RATIO
-
+    local playerPos = root.Position
+    local radius = currentRadius
+    local closeDist = radius * CLOSE_RATIO
     local npcs = getNPCs()
-    local displayCount = math.min(#npcs, CONFIG.MAX_DISPLAYED_NPCS)
+    local displayCount = math.min(#npcs, MAX_NPCS)
 
-    local npcDistances = {}
+    local sorted = {}
     for i, npc in ipairs(npcs) do
-        local dist = (npc.rootPart.Position - playerPos).Magnitude
-        npcDistances[i] = {npc = npc, dist = dist}
+        sorted[i] = { npc = npc, dist = (npc.root.Position - playerPos).Magnitude }
     end
-    table.sort(npcDistances, function(a, b) return a.dist < b.dist end)
+    table.sort(sorted, function(a, b) return a.dist < b.dist end)
 
-    for i = 1, CONFIG.MAX_DISPLAYED_NPCS do
-        local dot = npcDotPool[i]
-        local dirLine = npcDirLinePool[i]
-        local txt = npcTextPool[i]
+    for i = 1, MAX_NPCS do
+        local dot = npcDots[i]
+        local line = npcLines[i]
+        local txt = npcTexts[i]
 
         if i <= displayCount then
-            local entry = npcDistances[i]
+            local entry = sorted[i]
             local npc = entry.npc
             local dist = entry.dist
 
             if dist <= radius then
-                local radarPos = worldToRadar(npc.rootPart.Position, playerPos, heading, radius)
-
-                local color = (dist < closeThreshold) and CONFIG.COLOR_RED or CONFIG.COLOR_ORANGE
+                local rp = worldToRadar(npc.root.Position, playerPos, radius)
+                local color = (dist < closeDist) and COL_RED or COL_ORANGE
 
                 if dot then
-                    dot.Position = radarPos
+                    dot.Position = rp
                     dot.Color = color
                     dot.Visible = true
                 end
 
-                if dirLine then
-                    local npcHeading = math.atan2(
-                        npc.rootPart.CFrame.LookVector.X,
-                        npc.rootPart.CFrame.LookVector.Z
-                    )
-                    local dirX = radarPos.X + math.sin(npcHeading) * CONFIG.NPC_DIR_LINE_LENGTH
-                    local dirY = radarPos.Y - math.cos(npcHeading) * CONFIG.NPC_DIR_LINE_LENGTH
-                    dirLine.From = radarPos
-                    dirLine.To = Vector2.new(dirX, dirY)
-                    dirLine.Color = color
-                    dirLine.Visible = true
+                if line then
+                    local cf = npc.root.CFrame
+                    local nh = math.atan2(cf.LookVector.X, cf.LookVector.Z)
+                    local dx = rp.X + math.sin(nh) * DIR_LEN
+                    local dy = rp.Y - math.cos(nh) * DIR_LEN
+                    line.From = rp
+                    line.To = Vector2.new(dx, dy)
+                    line.Color = color
+                    line.Visible = true
                 end
 
                 if txt then
-                    local labelPos = Vector2.new(radarPos.X, radarPos.Y - CONFIG.NPC_DOT_RADIUS - 8)
-                    txt.Position = labelPos
+                    txt.Position = Vector2.new(rp.X, rp.Y - DOT_R - 8)
                     txt.Text = math.floor(dist) .. "m"
                     txt.Color = color
                     txt.Visible = true
                 end
             else
                 if dot then dot.Visible = false end
-                if dirLine then dirLine.Visible = false end
+                if line then line.Visible = false end
                 if txt then txt.Visible = false end
             end
         else
             if dot then dot.Visible = false end
-            if dirLine then dirLine.Visible = false end
+            if line then line.Visible = false end
             if txt then txt.Visible = false end
         end
     end
 end
 
-local function updateAllVisuals()
-    updateRadarPosition()
-
-    if bgCircle then bgCircle.Position = state.radarCenter end
-    if borderCircle then borderCircle.Position = state.radarCenter end
-
+local function updateAll()
+    updateRadarPos()
+    if bgCircle then bgCircle.Position = Vector2.new(radarCX, radarCY) end
+    if borderCircle then borderCircle.Position = Vector2.new(radarCX, radarCY) end
     if sliderTrack then
-        sliderTrack.From = Vector2.new(state.sliderStartX, state.sliderY)
-        sliderTrack.To = Vector2.new(state.sliderEndX, state.sliderY)
+        sliderTrack.From = Vector2.new(sliderStartX, sliderY)
+        sliderTrack.To = Vector2.new(sliderEndX, sliderY)
     end
-
     if titleText then
-        titleText.Position = Vector2.new(state.radarCenter.X, state.radarCenter.Y - CONFIG.RADAR_RADIUS - 10)
+        titleText.Position = Vector2.new(radarCX, radarCY - RADAR_RADIUS - 10)
     end
-
-    updateSliderVisuals()
-    updateLockVisuals()
+    updateSlider()
+    updateLock()
     updateCompass()
     updatePlayerArrow()
-    updateNPCDisplay()
+    updateNPCs()
 end
 
-local function handleInputBegan(input, gameProcessed)
-    if gameProcessed then return end
-    if not CONFIG.VISIBLE then return end
+-- Input
+local function hitSliderThumb(pos)
+    if not sliderThumb or not sliderThumb.Visible then return false end
+    local tp = sliderThumb.Position
+    local dx = pos.X - tp.X
+    local dy = pos.Y - tp.Y
+    return (dx * dx + dy * dy) <= (THUMB_R + 6) ^ 2
+end
 
-    local pos
+local function hitSliderTrack(pos)
+    return pos.X >= sliderStartX - 8 and pos.X <= sliderEndX + 8 and math.abs(pos.Y - sliderY) <= 14
+end
+
+local function hitLock(pos)
+    if not lockBg or not lockBg.Visible then return false end
+    local lp = lockBg.Position
+    local hs = LOCK_SIZE / 2 + 6
+    return math.abs(pos.X - lp.X) <= hs and math.abs(pos.Y - lp.Y) <= hs
+end
+
+local function onInputBegan(input, processed)
+    if processed then return end
+    if not visible then return end
+    local pos = nil
     if input.UserInputType == Enum.UserInputType.MouseButton1 then
         pos = Vector2.new(input.Position.X, input.Position.Y)
     elseif input.UserInputType == Enum.UserInputType.Touch then
@@ -627,38 +578,35 @@ local function handleInputBegan(input, gameProcessed)
     else
         return
     end
-
-    if isOnLockButton(pos) then
-        state.locked = not state.locked
-        updateLockVisuals()
+    if hitLock(pos) then
+        locked = not locked
+        updateSlider()
+        updateLock()
         return
     end
-
-    if not state.locked and isOnSliderThumb(pos) then
-        state.dragging = true
+    if not locked and hitSliderThumb(pos) then
+        dragging = true
         return
     end
-
-    if not state.locked and isOnSliderTrack(pos) then
-        local newRadius = sliderPosToRadius(pos.X)
-        if newRadius ~= state.currentRadius then
-            state.currentRadius = newRadius
-            updateSliderVisuals()
+    if not locked and hitSliderTrack(pos) then
+        local nr = sliderXtoRadius(pos.X)
+        if nr ~= currentRadius then
+            currentRadius = nr
+            updateSlider()
         end
-        state.dragging = true
+        dragging = true
         return
     end
 end
 
-local function handleInputChanged(input, gameProcessed)
-    if not state.dragging then return end
-    if not CONFIG.VISIBLE then return end
-    if state.locked then
-        state.dragging = false
+local function onInputChanged(input, processed)
+    if not dragging then return end
+    if not visible then return end
+    if locked then
+        dragging = false
         return
     end
-
-    local pos
+    local pos = nil
     if input.UserInputType == Enum.UserInputType.MouseMovement then
         pos = Vector2.new(input.Position.X, input.Position.Y)
     elseif input.UserInputType == Enum.UserInputType.Touch then
@@ -666,125 +614,77 @@ local function handleInputChanged(input, gameProcessed)
     else
         return
     end
-
-    local newRadius = sliderPosToRadius(pos.X)
-    if newRadius ~= state.currentRadius then
-        state.currentRadius = newRadius
-        updateSliderVisuals()
+    local nr = sliderXtoRadius(pos.X)
+    if nr ~= currentRadius then
+        currentRadius = nr
+        updateSlider()
     end
 end
 
-local function handleInputEnded(input, gameProcessed)
-    if input.UserInputType == Enum.UserInputType.MouseButton1
-        or input.UserInputType == Enum.UserInputType.Touch then
-        state.dragging = false
+local function onInputEnded(input, processed)
+    if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+        dragging = false
     end
 end
 
-local inputBeganConn = UserInputService.InputBegan:Connect(handleInputBegan)
-local inputChangedConn = UserInputService.InputChanged:Connect(handleInputChanged)
-local inputEndedConn = UserInputService.InputEnded:Connect(handleInputEnded)
+local inputBegan = UserInputService.InputBegan:Connect(onInputBegan)
+local inputChanged = UserInputService.InputChanged:Connect(onInputChanged)
+local inputEnded = UserInputService.InputEnded:Connect(onInputEnded)
 
-local function setAllVisible(visible)
-    CONFIG.VISIBLE = visible
-    local allObjects = {
-        bgCircle, borderCircle, playerDot,
-        sliderTrack, sliderThumb, sliderThumbBorder,
-        lockBg, lockBorder, lockText, radiusText, titleText,
-    }
-    for _, obj in ipairs(allObjects) do
-        if obj then
-            pcall(function() obj.Visible = visible end)
-        end
+-- Toggle visibility
+local function setVisible(v)
+    visible = v
+    local objs = { bgCircle, borderCircle, playerDot, sliderTrack, sliderThumb, sliderThumbB, lockBg, lockBorder, lockText, radiusText, titleText }
+    for _, obj in ipairs(objs) do
+        if obj then pcall(function() obj.Visible = v end) end
     end
-    for _, entry in ipairs(compassLabels) do
-        if entry.label then
-            pcall(function() entry.label.Visible = visible end)
-        end
+    for _, item in ipairs(compassItems) do
+        if item.label then pcall(function() item.label.Visible = v end) end
     end
-    for _, tick in ipairs(compassTicks) do
-        if tick.line then
-            pcall(function() tick.line.Visible = visible end)
-        end
+    for _, tick in ipairs(tickLines) do
+        if tick.line then pcall(function() tick.line.Visible = v end) end
     end
-    for _, line in ipairs(playerArrowLines) do
-        if line then
-            pcall(function() line.Visible = visible end)
-        end
+    for _, line in ipairs(arrowLines) do
+        if line then pcall(function() line.Visible = v end) end
     end
-    for _, dot in ipairs(npcDotPool) do
-        if dot and not visible then
-            pcall(function() dot.Visible = false end)
-        end
+    for _, dot in ipairs(npcDots) do
+        if dot and not v then pcall(function() dot.Visible = false end) end
     end
-    for _, line in ipairs(npcDirLinePool) do
-        if line and not visible then
-            pcall(function() line.Visible = false end)
-        end
+    for _, line in ipairs(npcLines) do
+        if line and not v then pcall(function() line.Visible = false end) end
     end
-    for _, txt in ipairs(npcTextPool) do
-        if txt and not visible then
-            pcall(function() txt.Visible = false end)
-        end
+    for _, txt in ipairs(npcTexts) do
+        if txt and not v then pcall(function() txt.Visible = false end) end
     end
 end
 
-local keyToggleConn = UserInputService.InputBegan:Connect(function(input, gameProcessed)
-    if gameProcessed then return end
+local keyToggle = UserInputService.InputBegan:Connect(function(input, processed)
+    if processed then return end
     if input.KeyCode == Enum.KeyCode.RightShift then
-        setAllVisible(not CONFIG.VISIBLE)
+        setVisible(not visible)
     end
 end)
 
-local updateConnection
-updateConnection = RunService.RenderStepped:Connect(function()
-    if not CONFIG.VISIBLE then return end
-    local success, err = pcall(updateAllVisuals)
-    if not success then
-        warn("[Radar] Update error:", err)
-    end
+-- Main loop
+local renderConn
+renderConn = RunService.RenderStepped:Connect(function()
+    if not visible then return end
+    pcall(updateAll)
 end)
 
-pcall(updateAllVisuals)
+-- Initial paint
+pcall(updateAll)
 
+-- Cleanup
 local function cleanup()
-    if updateConnection then updateConnection:Disconnect() end
-    if inputBeganConn then inputBeganConn:Disconnect() end
-    if inputChangedConn then inputChangedConn:Disconnect() end
-    if inputEndedConn then inputEndedConn:Disconnect() end
-    if keyToggleConn then keyToggleConn:Disconnect() end
-
-    local allObjects = {
-        bgCircle, borderCircle, playerDot,
-        sliderTrack, sliderThumb, sliderThumbBorder,
-        lockBg, lockBorder, lockText, radiusText, titleText,
-    }
-    for _, obj in ipairs(allObjects) do
+    if renderConn then renderConn:Disconnect() end
+    if inputBegan then inputBegan:Disconnect() end
+    if inputChanged then inputChanged:Disconnect() end
+    if inputEnded then inputEnded:Disconnect() end
+    if keyToggle then keyToggle:Disconnect() end
+    local objs = { bgCircle, borderCircle, playerDot, sliderTrack, sliderThumb, sliderThumbB, lockBg, lockBorder, lockText, radiusText, titleText }
+    for _, obj in ipairs(objs) do
         if obj then pcall(function() obj:Remove() end) end
     end
-    for _, entry in ipairs(compassLabels) do
-        if entry.label then pcall(function() entry.label:Remove() end) end
-    end
-    for _, tick in ipairs(compassTicks) do
-        if tick.line then pcall(function() tick.line:Remove() end) end
-    end
-    for _, line in ipairs(playerArrowLines) do
-        if line then pcall(function() line:Remove() end) end
-    end
-    for _, dot in ipairs(npcDotPool) do
-        if dot then pcall(function() dot:Remove() end) end
-    end
-    for _, line in ipairs(npcDirLinePool) do
-        if line then pcall(function() line:Remove() end) end
-    end
-    for _, txt in ipairs(npcTextPool) do
-        if txt then pcall(function() txt:Remove() end) end
-    end
-end
-
-getgenv().RadarCleanup = cleanup
-
-print("[Radar] NPC Radar loaded! Radius: " .. CONFIG.DEFAULT_RADIUS .. "m | Max: " .. CONFIG.MAX_TRACKING_RADIUS .. "m")
-print("[Radar] Press RightShift to toggle visibility")
-print("[Radar] Drag the slider to adjust radius | Click 'U' to lock/unlock")
-print("[Radar] Use getgenv().RadarCleanup() to remove the radar")
+    for _, item in ipairs(compassItems) do
+        if i
