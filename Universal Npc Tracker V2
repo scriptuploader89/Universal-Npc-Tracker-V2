@@ -1,690 +1,553 @@
-local RunService = game:GetService("RunService")
+-- NPC Radar Script
+-- Universal compatibility for PC and Mobile
+-- Works on all executors
+
 local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
 local UserInputService = game:GetService("UserInputService")
 local Workspace = game:GetService("Workspace")
+
 local LocalPlayer = Players.LocalPlayer
+local Camera = Workspace.CurrentCamera
 
--- Find Drawing library
-local Drawing = nil
-if getgenv and getgenv().Drawing then
-    Drawing = getgenv().Drawing
-end
-if not Drawing and _G.Drawing then
-    Drawing = _G.Drawing
-end
-if not Drawing and Drawing ~= nil then
-    -- Drawing is already a global in some executors
-elseif not Drawing then
-    pcall(function()
-        Drawing = Drawing
-    end)
-end
-if not Drawing then
-    print("[Radar] ERROR: Drawing library not found. Use an executor with Drawing support.")
-    return
-end
-
--- Config
-local RADAR_SIZE = 140
-local RADAR_RADIUS = 70
-local MAX_RADIUS = 500
+-- Configuration
 local DEFAULT_RADIUS = 150
-local SLIDER_W = 160
-local SLIDER_H = 6
-local THUMB_R = 10
-local LOCK_SIZE = 22
-local DOT_R = 4
-local DIR_LEN = 8
-local ARROW_SIZE = 10
-local MAX_NPCS = 60
-local CLOSE_RATIO = 0.4
-
--- Colors
-local COL_RED = Color3.fromRGB(255, 55, 55)
-local COL_ORANGE = Color3.fromRGB(255, 160, 35)
-local COL_PLAYER = Color3.fromRGB(0, 220, 100)
-local COL_COMPASS = Color3.fromRGB(200, 200, 200)
-local COL_BORDER = Color3.fromRGB(160, 160, 160)
-local COL_BG = Color3.fromRGB(20, 20, 25)
-local COL_TRACK = Color3.fromRGB(60, 60, 70)
-local COL_THUMB = Color3.fromRGB(100, 180, 255)
-local COL_UNLOCK = Color3.fromRGB(80, 200, 80)
-local COL_LOCK = Color3.fromRGB(220, 80, 80)
-local COL_TEXT = Color3.fromRGB(255, 255, 255)
-local COL_GOLD = Color3.fromRGB(255, 220, 100)
-local COL_GRAY = Color3.fromRGB(150, 150, 150)
-local COL_THUMB_LOCKED = Color3.fromRGB(120, 120, 130)
-local COL_THUMBB_LOCKED = Color3.fromRGB(160, 160, 160)
-local COL_TEXT_LOCKED = Color3.fromRGB(180, 180, 180)
-local COL_WHITE = Color3.fromRGB(255, 255, 255)
+local MAX_RADIUS = 500
+local MIN_RADIUS = 10
+local CLOSE_DISTANCE = 50
+local RADAR_SIZE = 200
+local RADAR_PADDING = 20
 
 -- State
 local currentRadius = DEFAULT_RADIUS
-local locked = false
-local dragging = false
-local visible = true
-local radarCX, radarCY = 0, 0
-local sliderStartX, sliderEndX, sliderY = 0, 0, 0
+local isLocked = false
+local isDragging = false
+local radarEnabled = true
 
--- Helpers
-local function createDraw(dtype, props)
-    local ok, obj = pcall(function()
-        return Drawing.new(dtype)
-    end)
-    if not ok or not obj then
-        return nil
-    end
-    for k, v in pairs(props) do
-        pcall(function()
-            obj[k] = v
-        end)
-    end
-    return obj
-end
+-- Create main GUI
+local ScreenGui = Instance.new("ScreenGui")
+ScreenGui.Name = "NPCRadar"
+ScreenGui.ResetOnSpawn = false
+ScreenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
 
-local function updateRadarPos()
-    local cam = Workspace.CurrentCamera
-    if not cam then return end
-    local vp = cam.ViewportSize
-    radarCX = vp.X - RADAR_RADIUS - 30
-    radarCY = RADAR_RADIUS + 40
-    sliderY = radarCY + RADAR_RADIUS + 20
-    sliderStartX = radarCX - SLIDER_W / 2
-    sliderEndX = radarCX + SLIDER_W / 2
-end
-updateRadarPos()
-
--- Radar circle
-local bgCircle = createDraw("Circle", {
-    Position = Vector2.new(radarCX, radarCY),
-    Radius = RADAR_RADIUS,
-    Color = COL_BG,
-    Filled = true,
-    Transparency = 0.55,
-    Visible = true,
-    NumSides = 64,
-})
-
-local borderCircle = createDraw("Circle", {
-    Position = Vector2.new(radarCX, radarCY),
-    Radius = RADAR_RADIUS,
-    Color = COL_BORDER,
-    Filled = false,
-    Thickness = 2.5,
-    Transparency = 1,
-    Visible = true,
-    NumSides = 64,
-})
-
--- Compass
-local compassItems = {}
-local compassDefs = {
-    { text = "N", angle = 0 },
-    { text = "S", angle = math.pi },
-    { text = "E", angle = math.pi / 2 },
-    { text = "W", angle = -math.pi / 2 },
-}
-for _, cd in ipairs(compassDefs) do
-    local lbl = createDraw("Text", {
-        Text = cd.text,
-        Size = 16,
-        Color = COL_COMPASS,
-        Center = true,
-        Outline = true,
-        Visible = true,
-        Transparency = 1,
-    })
-    if lbl then
-        table.insert(compassItems, { label = lbl, angle = cd.angle })
-    end
-end
-
-local tickLines = {}
-for i = 0, 35 do
-    if i % 9 ~= 0 then
-        local angle = (i / 36) * math.pi * 2
-        local line = createDraw("Line", {
-            Color = COL_COMPASS,
-            Thickness = 1,
-            Transparency = 0.7,
-            Visible = true,
-        })
-        if line then
-            table.insert(tickLines, { line = line, angle = angle })
+-- Handle different executor GUI parents
+local function setupGui()
+    pcall(function()
+        if syn and syn.protect_gui then
+            syn.protect_gui(ScreenGui)
+            ScreenGui.Parent = game:GetService("CoreGui")
+        elseif gethui then
+            ScreenGui.Parent = gethui()
+        elseif KRNL_LOADED then
+            ScreenGui.Parent = game:GetService("CoreGui")
+        else
+            ScreenGui.Parent = game:GetService("CoreGui")
         end
+    end)
+    
+    if not ScreenGui.Parent then
+        ScreenGui.Parent = LocalPlayer:WaitForChild("PlayerGui")
     end
 end
 
--- Player arrow (3 lines)
-local arrowLines = {}
-for _ = 1, 3 do
-    local line = createDraw("Line", {
-        Color = COL_PLAYER,
-        Thickness = 2.5,
-        Transparency = 1,
-        Visible = true,
-    })
-    if line then
-        table.insert(arrowLines, line)
-    end
+setupGui()
+
+-- Main container
+local MainFrame = Instance.new("Frame")
+MainFrame.Name = "MainFrame"
+MainFrame.Size = UDim2.new(0, RADAR_SIZE + 40, 0, RADAR_SIZE + 120)
+MainFrame.Position = UDim2.new(0, 10, 0.5, -(RADAR_SIZE + 120) / 2)
+MainFrame.BackgroundColor3 = Color3.fromRGB(30, 30, 30)
+MainFrame.BackgroundTransparency = 0.3
+MainFrame.BorderSizePixel = 0
+MainFrame.Parent = ScreenGui
+
+local MainCorner = Instance.new("UICorner")
+MainCorner.CornerRadius = UDim.new(0, 10)
+MainCorner.Parent = MainFrame
+
+-- Title bar
+local TitleBar = Instance.new("Frame")
+TitleBar.Name = "TitleBar"
+TitleBar.Size = UDim2.new(1, 0, 0, 25)
+TitleBar.BackgroundColor3 = Color3.fromRGB(20, 20, 20)
+TitleBar.BackgroundTransparency = 0.3
+TitleBar.BorderSizePixel = 0
+TitleBar.Parent = MainFrame
+
+local TitleCorner = Instance.new("UICorner")
+TitleCorner.CornerRadius = UDim.new(0, 10)
+TitleCorner.Parent = TitleBar
+
+local TitleLabel = Instance.new("TextLabel")
+TitleLabel.Name = "Title"
+TitleLabel.Size = UDim2.new(1, -50, 1, 0)
+TitleLabel.Position = UDim2.new(0, 10, 0, 0)
+TitleLabel.BackgroundTransparency = 1
+TitleLabel.Text = "NPC Radar"
+TitleLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
+TitleLabel.TextSize = 14
+TitleLabel.Font = Enum.Font.GothamBold
+TitleLabel.TextXAlignment = Enum.TextXAlignment.Left
+TitleLabel.Parent = TitleBar
+
+-- Toggle button
+local ToggleButton = Instance.new("TextButton")
+ToggleButton.Name = "Toggle"
+ToggleButton.Size = UDim2.new(0, 20, 0, 20)
+ToggleButton.Position = UDim2.new(1, -25, 0.5, -10)
+ToggleButton.BackgroundColor3 = Color3.fromRGB(0, 200, 0)
+ToggleButton.BorderSizePixel = 0
+ToggleButton.Text = ""
+ToggleButton.Parent = TitleBar
+
+local ToggleCorner = Instance.new("UICorner")
+ToggleCorner.CornerRadius = UDim.new(0, 5)
+ToggleCorner.Parent = ToggleButton
+
+-- Compass display
+local CompassFrame = Instance.new("Frame")
+CompassFrame.Name = "Compass"
+CompassFrame.Size = UDim2.new(1, -20, 0, 20)
+CompassFrame.Position = UDim2.new(0, 10, 0, 28)
+CompassFrame.BackgroundTransparency = 1
+CompassFrame.Parent = MainFrame
+
+local CompassLabel = Instance.new("TextLabel")
+CompassLabel.Name = "Direction"
+CompassLabel.Size = UDim2.new(1, 0, 1, 0)
+CompassLabel.BackgroundTransparency = 1
+CompassLabel.Text = "N"
+CompassLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
+CompassLabel.TextSize = 16
+CompassLabel.Font = Enum.Font.GothamBold
+CompassLabel.Parent = CompassFrame
+
+-- Radar container (circular)
+local RadarContainer = Instance.new("Frame")
+RadarContainer.Name = "RadarContainer"
+RadarContainer.Size = UDim2.new(0, RADAR_SIZE, 0, RADAR_SIZE)
+RadarContainer.Position = UDim2.new(0.5, -RADAR_SIZE / 2, 0, 50)
+RadarContainer.BackgroundColor3 = Color3.fromRGB(10, 10, 10)
+RadarContainer.BackgroundTransparency = 0.2
+RadarContainer.BorderSizePixel = 0
+RadarContainer.ClipsDescendants = true
+RadarContainer.Parent = MainFrame
+
+local RadarCorner = Instance.new("UICorner")
+RadarCorner.CornerRadius = UDim.new(0.5, 0)
+RadarCorner.Parent = RadarContainer
+
+-- Radar border
+local RadarBorder = Instance.new("UIStroke")
+RadarBorder.Color = Color3.fromRGB(100, 100, 100)
+RadarBorder.Thickness = 2
+RadarBorder.Parent = RadarContainer
+
+-- Crosshairs
+local CrosshairV = Instance.new("Frame")
+CrosshairV.Name = "CrosshairV"
+CrosshairV.Size = UDim2.new(0, 1, 1, 0)
+CrosshairV.Position = UDim2.new(0.5, 0, 0, 0)
+CrosshairV.BackgroundColor3 = Color3.fromRGB(60, 60, 60)
+CrosshairV.BackgroundTransparency = 0.5
+CrosshairV.BorderSizePixel = 0
+CrosshairV.Parent = RadarContainer
+
+local CrosshairH = Instance.new("Frame")
+CrosshairH.Name = "CrosshairH"
+CrosshairH.Size = UDim2.new(1, 0, 0, 1)
+CrosshairH.Position = UDim2.new(0, 0, 0.5, 0)
+CrosshairH.BackgroundColor3 = Color3.fromRGB(60, 60, 60)
+CrosshairH.BackgroundTransparency = 0.5
+CrosshairH.BorderSizePixel = 0
+CrosshairH.Parent = RadarContainer
+
+-- Cardinal direction labels on radar
+local function createCardinalLabel(text, pos)
+    local label = Instance.new("TextLabel")
+    label.Size = UDim2.new(0, 20, 0, 20)
+    label.Position = pos
+    label.BackgroundTransparency = 1
+    label.Text = text
+    label.TextColor3 = Color3.fromRGB(150, 150, 150)
+    label.TextSize = 12
+    label.Font = Enum.Font.GothamBold
+    label.Parent = RadarContainer
+    return label
 end
 
-local playerDot = createDraw("Circle", {
-    Position = Vector2.new(radarCX, radarCY),
-    Radius = 3,
-    Color = COL_PLAYER,
-    Filled = true,
-    Transparency = 1,
-    Visible = true,
-    NumSides = 12,
-})
+createCardinalLabel("N", UDim2.new(0.5, -10, 0, 2))
+createCardinalLabel("S", UDim2.new(0.5, -10, 1, -18))
+createCardinalLabel("E", UDim2.new(1, -18, 0.5, -10))
+createCardinalLabel("W", UDim2.new(0, 2, 0.5, -10))
 
--- NPC pools
-local npcDots = {}
-local npcLines = {}
-local npcTexts = {}
-for _ = 1, MAX_NPCS do
-    local dot = createDraw("Circle", {
-        Radius = DOT_R,
-        Filled = true,
-        Transparency = 1,
-        Visible = false,
-        NumSides = 12,
-    })
-    if dot then table.insert(npcDots, dot) end
+-- Player arrow (center)
+local PlayerArrow = Instance.new("ImageLabel")
+PlayerArrow.Name = "PlayerArrow"
+PlayerArrow.Size = UDim2.new(0, 20, 0, 20)
+PlayerArrow.Position = UDim2.new(0.5, -10, 0.5, -10)
+PlayerArrow.BackgroundTransparency = 1
+PlayerArrow.Image = "rbxassetid://6031091004"
+PlayerArrow.ImageColor3 = Color3.fromRGB(0, 255, 0)
+PlayerArrow.Parent = RadarContainer
 
-    local line = createDraw("Line", {
-        Thickness = 1.5,
-        Transparency = 0.8,
-        Visible = false,
-    })
-    if line then table.insert(npcLines, line) end
+-- Slider container
+local SliderFrame = Instance.new("Frame")
+SliderFrame.Name = "SliderFrame"
+SliderFrame.Size = UDim2.new(1, -20, 0, 40)
+SliderFrame.Position = UDim2.new(0, 10, 0, RADAR_SIZE + 55)
+SliderFrame.BackgroundTransparency = 1
+SliderFrame.Parent = MainFrame
 
-    local txt = createDraw("Text", {
-        Size = 12,
-        Center = true,
-        Outline = true,
-        Visible = false,
-        Transparency = 1,
-    })
-    if txt then table.insert(npcTexts, txt) end
-end
+local RadiusLabel = Instance.new("TextLabel")
+RadiusLabel.Name = "RadiusLabel"
+RadiusLabel.Size = UDim2.new(1, 0, 0, 15)
+RadiusLabel.BackgroundTransparency = 1
+RadiusLabel.Text = "Radius: " .. currentRadius
+RadiusLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
+RadiusLabel.TextSize = 12
+RadiusLabel.Font = Enum.Font.Gotham
+RadiusLabel.Parent = SliderFrame
 
--- Slider
-local sliderTrack = createDraw("Line", {
-    From = Vector2.new(sliderStartX, sliderY),
-    To = Vector2.new(sliderEndX, sliderY),
-    Color = COL_TRACK,
-    Thickness = SLIDER_H,
-    Transparency = 1,
-    Visible = true,
-})
+local SliderBar = Instance.new("Frame")
+SliderBar.Name = "SliderBar"
+SliderBar.Size = UDim2.new(1, -40, 0, 8)
+SliderBar.Position = UDim2.new(0, 0, 0, 20)
+SliderBar.BackgroundColor3 = Color3.fromRGB(50, 50, 50)
+SliderBar.BorderSizePixel = 0
+SliderBar.Parent = SliderFrame
 
-local sliderThumb = createDraw("Circle", {
-    Radius = THUMB_R,
-    Color = COL_THUMB,
-    Filled = true,
-    Transparency = 1,
-    Visible = true,
-    NumSides = 16,
-})
+local SliderBarCorner = Instance.new("UICorner")
+SliderBarCorner.CornerRadius = UDim.new(0, 4)
+SliderBarCorner.Parent = SliderBar
 
-local sliderThumbB = createDraw("Circle", {
-    Radius = THUMB_R + 1,
-    Color = COL_WHITE,
-    Filled = false,
-    Thickness = 1.5,
-    Transparency = 1,
-    Visible = true,
-    NumSides = 16,
-})
+local SliderFill = Instance.new("Frame")
+SliderFill.Name = "Fill"
+SliderFill.Size = UDim2.new((currentRadius - MIN_RADIUS) / (MAX_RADIUS - MIN_RADIUS), 0, 1, 0)
+SliderFill.BackgroundColor3 = Color3.fromRGB(0, 150, 255)
+SliderFill.BorderSizePixel = 0
+SliderFill.Parent = SliderBar
+
+local SliderFillCorner = Instance.new("UICorner")
+SliderFillCorner.CornerRadius = UDim.new(0, 4)
+SliderFillCorner.Parent = SliderFill
+
+local SliderKnob = Instance.new("Frame")
+SliderKnob.Name = "Knob"
+SliderKnob.Size = UDim2.new(0, 16, 0, 16)
+SliderKnob.Position = UDim2.new((currentRadius - MIN_RADIUS) / (MAX_RADIUS - MIN_RADIUS), -8, 0.5, -8)
+SliderKnob.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+SliderKnob.BorderSizePixel = 0
+SliderKnob.Parent = SliderBar
+
+local SliderKnobCorner = Instance.new("UICorner")
+SliderKnobCorner.CornerRadius = UDim.new(0.5, 0)
+SliderKnobCorner.Parent = SliderKnob
 
 -- Lock button
-local lockBg = createDraw("Square", {
-    Size = Vector2.new(LOCK_SIZE, LOCK_SIZE),
-    Color = COL_UNLOCK,
-    Filled = true,
-    Transparency = 1,
-    Visible = true,
-})
+local LockButton = Instance.new("TextButton")
+LockButton.Name = "LockButton"
+LockButton.Size = UDim2.new(0, 30, 0, 20)
+LockButton.Position = UDim2.new(1, -30, 0, 17)
+LockButton.BackgroundColor3 = Color3.fromRGB(50, 50, 50)
+LockButton.BorderSizePixel = 0
+LockButton.Text = "🔓"
+LockButton.TextSize = 12
+LockButton.Font = Enum.Font.Gotham
+LockButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+LockButton.Parent = SliderFrame
 
-local lockBorder = createDraw("Square", {
-    Size = Vector2.new(LOCK_SIZE + 2, LOCK_SIZE + 2),
-    Color = Color3.fromRGB(200, 200, 200),
-    Filled = false,
-    Thickness = 1.5,
-    Transparency = 1,
-    Visible = true,
-})
+local LockCorner = Instance.new("UICorner")
+LockCorner.CornerRadius = UDim.new(0, 5)
+LockCorner.Parent = LockButton
 
-local lockText = createDraw("Text", {
-    Text = "U",
-    Size = 14,
-    Color = COL_WHITE,
-    Center = true,
-    Outline = true,
-    Transparency = 1,
-    Visible = true,
-})
+-- NPC dots container
+local NPCDotsFolder = Instance.new("Folder")
+NPCDotsFolder.Name = "NPCDots"
+NPCDotsFolder.Parent = RadarContainer
 
--- Info texts
-local radiusText = createDraw("Text", {
-    Text = "Radius: " .. DEFAULT_RADIUS .. "m",
-    Size = 14,
-    Color = COL_TEXT,
-    Center = true,
-    Outline = true,
-    Transparency = 1,
-    Visible = true,
-})
+-- Pool of reusable NPC dots
+local dotPool = {}
+local activeDots = {}
 
-local titleText = createDraw("Text", {
-    Text = "NPC RADAR",
-    Size = 10,
-    Color = COL_GRAY,
-    Center = true,
-    Outline = false,
-    Transparency = 1,
-    Visible = true,
-})
-
--- Functions
-local function getCamHeading()
-    local cam = Workspace.CurrentCamera
-    if not cam then return 0 end
-    local lv = cam.CFrame.LookVector
-    return math.atan2(lv.X, lv.Z)
+local function createDot()
+    local dotFrame = Instance.new("Frame")
+    dotFrame.Size = UDim2.new(0, 12, 0, 12)
+    dotFrame.BackgroundColor3 = Color3.fromRGB(255, 0, 0)
+    dotFrame.BorderSizePixel = 0
+    dotFrame.Visible = false
+    dotFrame.Parent = NPCDotsFolder
+    
+    local dotCorner = Instance.new("UICorner")
+    dotCorner.CornerRadius = UDim.new(0.5, 0)
+    dotCorner.Parent = dotFrame
+    
+    local directionIndicator = Instance.new("Frame")
+    directionIndicator.Name = "Direction"
+    directionIndicator.Size = UDim2.new(0, 4, 0, 8)
+    directionIndicator.Position = UDim2.new(0.5, -2, 0, -6)
+    directionIndicator.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+    directionIndicator.BorderSizePixel = 0
+    directionIndicator.Parent = dotFrame
+    
+    local dirCorner = Instance.new("UICorner")
+    dirCorner.CornerRadius = UDim.new(0, 2)
+    dirCorner.Parent = directionIndicator
+    
+    local distLabel = Instance.new("TextLabel")
+    distLabel.Name = "Distance"
+    distLabel.Size = UDim2.new(0, 40, 0, 12)
+    distLabel.Position = UDim2.new(0.5, -20, 1, 2)
+    distLabel.BackgroundTransparency = 1
+    distLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
+    distLabel.TextSize = 8
+    distLabel.Font = Enum.Font.GothamBold
+    distLabel.TextStrokeTransparency = 0.5
+    distLabel.Parent = dotFrame
+    
+    return dotFrame
 end
 
-local function worldToRadar(worldPos, playerPos, radius)
-    local dx = worldPos.X - playerPos.X
-    local dz = worldPos.Z - playerPos.Z
-    local dist = math.sqrt(dx * dx + dz * dz)
-    if dist < 0.01 then
-        return Vector2.new(radarCX, radarCY), 0
-    end
-    local scale = RADAR_RADIUS / radius
-    local scaled = dist * scale
-    local clamped = math.min(scaled, RADAR_RADIUS - DOT_R - 2)
-    local angle = math.atan2(dx, dz)
-    local sx = radarCX + math.sin(angle) * clamped
-    local sy = radarCY - math.cos(angle) * clamped
-    return Vector2.new(sx, sy), dist
-end
-
-local function sliderXtoRadius(x)
-    local ratio = (x - sliderStartX) / SLIDER_W
-    ratio = math.clamp(ratio, 0, 1)
-    return math.floor(1 + ratio * (MAX_RADIUS - 1))
-end
-
-local function radiusToSliderX(r)
-    local ratio = (r - 1) / (MAX_RADIUS - 1)
-    return sliderStartX + ratio * SLIDER_W
-end
-
--- Update visuals
-local function updateSlider()
-    local tx = radiusToSliderX(currentRadius)
-    local tp = Vector2.new(tx, sliderY)
-    if sliderThumb then
-        sliderThumb.Position = tp
-        sliderThumb.Color = locked and COL_THUMB_LOCKED or COL_THUMB
-    end
-    if sliderThumbB then
-        sliderThumbB.Position = tp
-        sliderThumbB.Color = locked and COL_THUMBB_LOCKED or COL_WHITE
-    end
-    if radiusText then
-        radiusText.Text = "Radius: " .. currentRadius .. "m"
-        radiusText.Position = Vector2.new(radarCX, sliderY + 18)
-        radiusText.Color = locked and COL_TEXT_LOCKED or COL_TEXT
-    end
-end
-
-local function updateLock()
-    local lcx = sliderEndX + LOCK_SIZE / 2 + 12
-    local lcy = sliderY
-    local lcp = Vector2.new(lcx, lcy)
-    if lockBg then
-        lockBg.Position = lcp
-        lockBg.Color = locked and COL_LOCK or COL_UNLOCK
-    end
-    if lockBorder then
-        lockBorder.Position = lcp
-    end
-    if lockText then
-        lockText.Position = lcp
-        lockText.Text = locked and "L" or "U"
-    end
-end
-
-local function updateCompass()
-    for _, item in ipairs(compassItems) do
-        if item.label then
-            local lx = radarCX + math.sin(item.angle) * (RADAR_RADIUS + 12)
-            local ly = radarCY - math.cos(item.angle) * (RADAR_RADIUS + 12)
-            item.label.Position = Vector2.new(lx, ly)
-            item.label.Color = (item.angle == 0) and COL_GOLD or COL_COMPASS
+local function getDot()
+    for _, dot in ipairs(dotPool) do
+        if not dot.Visible then
+            return dot
         end
     end
-    for _, tick in ipairs(tickLines) do
-        if tick.line then
-            local ir = RADAR_RADIUS - 6
-            local ora = RADAR_RADIUS - 2
-            local fx = radarCX + math.sin(tick.angle) * ir
-            local fy = radarCY - math.cos(tick.angle) * ir
-            local tx = radarCX + math.sin(tick.angle) * ora
-            local ty = radarCY - math.cos(tick.angle) * ora
-            tick.line.From = Vector2.new(fx, fy)
-            tick.line.To = Vector2.new(tx, ty)
-        end
+    local newDot = createDot()
+    table.insert(dotPool, newDot)
+    return newDot
+end
+
+local function hideAllDots()
+    for _, dot in ipairs(dotPool) do
+        dot.Visible = false
     end
 end
 
-local function updatePlayerArrow()
-    local heading = getCamHeading()
-    local cx, cy = radarCX, radarCY
-    local tipX = cx + math.sin(heading) * ARROW_SIZE
-    local tipY = cy - math.cos(heading) * ARROW_SIZE
-    local ba1 = heading + math.pi * 0.75
-    local ba2 = heading - math.pi * 0.75
-    local bs = ARROW_SIZE * 0.65
-    local blX = cx + math.sin(ba1) * bs
-    local blY = cy - math.cos(ba1) * bs
-    local brX = cx + math.sin(ba2) * bs
-    local brY = cy - math.cos(ba2) * bs
-    local points = {
-        Vector2.new(tipX, tipY),
-        Vector2.new(blX, blY),
-        Vector2.new(brX, brY),
-    }
-    local pairs = { {1, 2}, {1, 3}, {2, 3} }
-    for i, line in ipairs(arrowLines) do
-        if line and pairs[i] then
-            line.From = points[pairs[i][1]]
-            line.To = points[pairs[i][2]]
+-- Utility functions
+local function getCompassDirection(angle)
+    local directions = {"N", "NE", "E", "SE", "S", "SW", "W", "NW"}
+    local index = math.floor(((angle + 22.5) % 360) / 45) + 1
+    return directions[index]
+end
+
+local function isNPC(model)
+    if not model:IsA("Model") then return false end
+    if not model:FindFirstChild("Humanoid") then return false end
+    if not model:FindFirstChild("HumanoidRootPart") then return false end
+    
+    -- Check if it belongs to a player
+    for _, player in ipairs(Players:GetPlayers()) do
+        if player.Character == model then
+            return false
         end
     end
-    if playerDot then
-        playerDot.Position = Vector2.new(cx, cy)
-    end
+    
+    return true
 end
 
 local function getNPCs()
     local npcs = {}
-    local seen = {}
-    local playerChars = {}
-    for _, p in ipairs(Players:GetPlayers()) do
-        if p.Character then
-            playerChars[p.Character] = true
+    
+    local function searchFolder(folder)
+        for _, obj in ipairs(folder:GetChildren()) do
+            if isNPC(obj) then
+                table.insert(npcs, obj)
+            elseif obj:IsA("Folder") or obj:IsA("Model") then
+                searchFolder(obj)
+            end
         end
     end
-    for _, obj in ipairs(Workspace:GetDescendants()) do
-        if obj:IsA("Humanoid") then
-            local model = obj.Parent
-            if not model or not model:IsA("Model") then
-                model = model and model.Parent
-            end
-            if not model or not model:IsA("Model") then
-                goto nextNpc
-            end
-            if playerChars[model] then
-                goto nextNpc
-            end
-            if seen[model] then
-                goto nextNpc
-            end
-            seen[model] = true
-            local root = model:FindFirstChild("HumanoidRootPart")
-                or model:FindFirstChild("Torso")
-                or model.PrimaryPart
-            if root then
-                table.insert(npcs, { model = model, humanoid = obj, root = root })
-            end
-            ::nextNpc::
-        end
-    end
+    
+    searchFolder(Workspace)
     return npcs
 end
 
-local function updateNPCs()
-    local char = LocalPlayer.Character
-    if not char then
-        for i = 1, MAX_NPCS do
-            if npcDots[i] then npcDots[i].Visible = false end
-            if npcLines[i] then npcLines[i].Visible = false end
-            if npcTexts[i] then npcTexts[i].Visible = false end
-        end
-        return
-    end
-    local root = char:FindFirstChild("HumanoidRootPart") or char.PrimaryPart
-    if not root then
-        for i = 1, MAX_NPCS do
-            if npcDots[i] then npcDots[i].Visible = false end
-            if npcLines[i] then npcLines[i].Visible = false end
-            if npcTexts[i] then npcTexts[i].Visible = false end
-        end
-        return
-    end
-    local playerPos = root.Position
-    local radius = currentRadius
-    local closeDist = radius * CLOSE_RATIO
-    local npcs = getNPCs()
-    local displayCount = math.min(#npcs, MAX_NPCS)
-
-    local sorted = {}
-    for i, npc in ipairs(npcs) do
-        sorted[i] = { npc = npc, dist = (npc.root.Position - playerPos).Magnitude }
-    end
-    table.sort(sorted, function(a, b) return a.dist < b.dist end)
-
-    for i = 1, MAX_NPCS do
-        local dot = npcDots[i]
-        local line = npcLines[i]
-        local txt = npcTexts[i]
-
-        if i <= displayCount then
-            local entry = sorted[i]
-            local npc = entry.npc
-            local dist = entry.dist
-
-            if dist <= radius then
-                local rp = worldToRadar(npc.root.Position, playerPos, radius)
-                local color = (dist < closeDist) and COL_RED or COL_ORANGE
-
-                if dot then
-                    dot.Position = rp
-                    dot.Color = color
-                    dot.Visible = true
-                end
-
-                if line then
-                    local cf = npc.root.CFrame
-                    local nh = math.atan2(cf.LookVector.X, cf.LookVector.Z)
-                    local dx = rp.X + math.sin(nh) * DIR_LEN
-                    local dy = rp.Y - math.cos(nh) * DIR_LEN
-                    line.From = rp
-                    line.To = Vector2.new(dx, dy)
-                    line.Color = color
-                    line.Visible = true
-                end
-
-                if txt then
-                    txt.Position = Vector2.new(rp.X, rp.Y - DOT_R - 8)
-                    txt.Text = math.floor(dist) .. "m"
-                    txt.Color = color
-                    txt.Visible = true
-                end
-            else
-                if dot then dot.Visible = false end
-                if line then line.Visible = false end
-                if txt then txt.Visible = false end
-            end
-        else
-            if dot then dot.Visible = false end
-            if line then line.Visible = false end
-            if txt then txt.Visible = false end
-        end
-    end
+-- Slider functionality
+local function updateSlider(value)
+    if isLocked then return end
+    
+    value = math.clamp(value, MIN_RADIUS, MAX_RADIUS)
+    currentRadius = math.floor(value)
+    
+    local percent = (currentRadius - MIN_RADIUS) / (MAX_RADIUS - MIN_RADIUS)
+    SliderFill.Size = UDim2.new(percent, 0, 1, 0)
+    SliderKnob.Position = UDim2.new(percent, -8, 0.5, -8)
+    RadiusLabel.Text = "Radius: " .. currentRadius
 end
 
-local function updateAll()
-    updateRadarPos()
-    if bgCircle then bgCircle.Position = Vector2.new(radarCX, radarCY) end
-    if borderCircle then borderCircle.Position = Vector2.new(radarCX, radarCY) end
-    if sliderTrack then
-        sliderTrack.From = Vector2.new(sliderStartX, sliderY)
-        sliderTrack.To = Vector2.new(sliderEndX, sliderY)
-    end
-    if titleText then
-        titleText.Position = Vector2.new(radarCX, radarCY - RADAR_RADIUS - 10)
-    end
-    updateSlider()
-    updateLock()
-    updateCompass()
-    updatePlayerArrow()
-    updateNPCs()
+local function handleSliderInput(input)
+    if isLocked then return end
+    
+    local sliderPos = SliderBar.AbsolutePosition
+    local sliderSize = SliderBar.AbsoluteSize
+    
+    local relativeX = math.clamp((input.Position.X - sliderPos.X) / sliderSize.X, 0, 1)
+    local newValue = MIN_RADIUS + (relativeX * (MAX_RADIUS - MIN_RADIUS))
+    updateSlider(newValue)
 end
 
--- Input
-local function hitSliderThumb(pos)
-    if not sliderThumb or not sliderThumb.Visible then return false end
-    local tp = sliderThumb.Position
-    local dx = pos.X - tp.X
-    local dy = pos.Y - tp.Y
-    return (dx * dx + dy * dy) <= (THUMB_R + 6) ^ 2
-end
-
-local function hitSliderTrack(pos)
-    return pos.X >= sliderStartX - 8 and pos.X <= sliderEndX + 8 and math.abs(pos.Y - sliderY) <= 14
-end
-
-local function hitLock(pos)
-    if not lockBg or not lockBg.Visible then return false end
-    local lp = lockBg.Position
-    local hs = LOCK_SIZE / 2 + 6
-    return math.abs(pos.X - lp.X) <= hs and math.abs(pos.Y - lp.Y) <= hs
-end
-
-local function onInputBegan(input, processed)
-    if processed then return end
-    if not visible then return end
-    local pos = nil
-    if input.UserInputType == Enum.UserInputType.MouseButton1 then
-        pos = Vector2.new(input.Position.X, input.Position.Y)
-    elseif input.UserInputType == Enum.UserInputType.Touch then
-        pos = Vector2.new(input.Position.X, input.Position.Y)
-    else
-        return
-    end
-    if hitLock(pos) then
-        locked = not locked
-        updateSlider()
-        updateLock()
-        return
-    end
-    if not locked and hitSliderThumb(pos) then
-        dragging = true
-        return
-    end
-    if not locked and hitSliderTrack(pos) then
-        local nr = sliderXtoRadius(pos.X)
-        if nr ~= currentRadius then
-            currentRadius = nr
-            updateSlider()
-        end
-        dragging = true
-        return
-    end
-end
-
-local function onInputChanged(input, processed)
-    if not dragging then return end
-    if not visible then return end
-    if locked then
-        dragging = false
-        return
-    end
-    local pos = nil
-    if input.UserInputType == Enum.UserInputType.MouseMovement then
-        pos = Vector2.new(input.Position.X, input.Position.Y)
-    elseif input.UserInputType == Enum.UserInputType.Touch then
-        pos = Vector2.new(input.Position.X, input.Position.Y)
-    else
-        return
-    end
-    local nr = sliderXtoRadius(pos.X)
-    if nr ~= currentRadius then
-        currentRadius = nr
-        updateSlider()
-    end
-end
-
-local function onInputEnded(input, processed)
+SliderBar.InputBegan:Connect(function(input)
     if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
-        dragging = false
-    end
-end
-
-local inputBegan = UserInputService.InputBegan:Connect(onInputBegan)
-local inputChanged = UserInputService.InputChanged:Connect(onInputChanged)
-local inputEnded = UserInputService.InputEnded:Connect(onInputEnded)
-
--- Toggle visibility
-local function setVisible(v)
-    visible = v
-    local objs = { bgCircle, borderCircle, playerDot, sliderTrack, sliderThumb, sliderThumbB, lockBg, lockBorder, lockText, radiusText, titleText }
-    for _, obj in ipairs(objs) do
-        if obj then pcall(function() obj.Visible = v end) end
-    end
-    for _, item in ipairs(compassItems) do
-        if item.label then pcall(function() item.label.Visible = v end) end
-    end
-    for _, tick in ipairs(tickLines) do
-        if tick.line then pcall(function() tick.line.Visible = v end) end
-    end
-    for _, line in ipairs(arrowLines) do
-        if line then pcall(function() line.Visible = v end) end
-    end
-    for _, dot in ipairs(npcDots) do
-        if dot and not v then pcall(function() dot.Visible = false end) end
-    end
-    for _, line in ipairs(npcLines) do
-        if line and not v then pcall(function() line.Visible = false end) end
-    end
-    for _, txt in ipairs(npcTexts) do
-        if txt and not v then pcall(function() txt.Visible = false end) end
-    end
-end
-
-local keyToggle = UserInputService.InputBegan:Connect(function(input, processed)
-    if processed then return end
-    if input.KeyCode == Enum.KeyCode.RightShift then
-        setVisible(not visible)
+        if not isLocked then
+            isDragging = true
+            handleSliderInput(input)
+        end
     end
 end)
 
--- Main loop
-local renderConn
-renderConn = RunService.RenderStepped:Connect(function()
-    if not visible then return end
-    pcall(updateAll)
+SliderKnob.InputBegan:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+        if not isLocked then
+            isDragging = true
+        end
+    end
 end)
 
--- Initial paint
-pcall(updateAll)
-
--- Cleanup
-local function cleanup()
-    if renderConn then renderConn:Disconnect() end
-    if inputBegan then inputBegan:Disconnect() end
-    if inputChanged then inputChanged:Disconnect() end
-    if inputEnded then inputEnded:Disconnect() end
-    if keyToggle then keyToggle:Disconnect() end
-    local objs = { bgCircle, borderCircle, playerDot, sliderTrack, sliderThumb, sliderThumbB, lockBg, lockBorder, lockText, radiusText, titleText }
-    for _, obj in ipairs(objs) do
-        if obj then pcall(function() obj:Remove() end) end
+UserInputService.InputChanged:Connect(function(input)
+    if isDragging and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then
+        handleSliderInput(input)
     end
-    for _, item in ipairs(compassItems) do
-        if i
+end)
+
+UserInputService.InputEnded:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+        isDragging = false
+    end
+end)
+
+-- Lock button
+LockButton.MouseButton1Click:Connect(function()
+    isLocked = not isLocked
+    LockButton.Text = isLocked and "🔒" or "🔓"
+    LockButton.BackgroundColor3 = isLocked and Color3.fromRGB(200, 50, 50) or Color3.fromRGB(50, 50, 50)
+    SliderKnob.BackgroundColor3 = isLocked and Color3.fromRGB(150, 150, 150) or Color3.fromRGB(255, 255, 255)
+end)
+
+-- Toggle button
+ToggleButton.MouseButton1Click:Connect(function()
+    radarEnabled = not radarEnabled
+    ToggleButton.BackgroundColor3 = radarEnabled and Color3.fromRGB(0, 200, 0) or Color3.fromRGB(200, 0, 0)
+    RadarContainer.Visible = radarEnabled
+end)
+
+-- Draggable main frame
+local draggingFrame = false
+local dragStart = nil
+local startPos = nil
+
+TitleBar.InputBegan:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+        draggingFrame = true
+        dragStart = input.Position
+        startPos = MainFrame.Position
+    end
+end)
+
+TitleBar.InputEnded:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+        draggingFrame = false
+    end
+end)
+
+UserInputService.InputChanged:Connect(function(input)
+    if draggingFrame and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then
+        local delta = input.Position - dragStart
+        MainFrame.Position = UDim2.new(
+            startPos.X.Scale,
+            startPos.X.Offset + delta.X,
+            startPos.Y.Scale,
+            startPos.Y.Offset + delta.Y
+        )
+    end
+end)
+
+-- Main update loop
+RunService.RenderStepped:Connect(function()
+    if not radarEnabled then return end
+    
+    local character = LocalPlayer.Character
+    if not character then return end
+    
+    local humanoidRootPart = character:FindFirstChild("HumanoidRootPart")
+    if not humanoidRootPart then return end
+    
+    local playerPos = humanoidRootPart.Position
+    local playerLook = humanoidRootPart.CFrame.LookVector
+    local playerAngle = math.atan2(playerLook.X, playerLook.Z)
+    
+    -- Update compass
+    local compassAngle = math.deg(math.atan2(playerLook.X, playerLook.Z))
+    if compassAngle < 0 then compassAngle = compassAngle + 360 end
+    CompassLabel.Text = getCompassDirection(compassAngle)
+    
+    -- Update player arrow rotation
+    PlayerArrow.Rotation = 0
+    
+    -- Hide all dots first
+    hideAllDots()
+    
+    -- Get and display NPCs
+    local npcs = getNPCs()
+    
+    for _, npc in ipairs(npcs) do
+        local npcRoot = npc:FindFirstChild("HumanoidRootPart")
+        if npcRoot then
+            local npcPos = npcRoot.Position
+            local offset = npcPos - playerPos
+            local distance = offset.Magnitude
+            
+            if distance <= currentRadius then
+                local dot = getDot()
+                
+                -- Calculate position on radar
+                local relX = offset.X / currentRadius
+                local relZ = offset.Z / currentRadius
+                
+                -- Rotate based on player facing direction
+                local rotatedX = relX * math.cos(-playerAngle) - relZ * math.sin(-playerAngle)
+                local rotatedZ = relX * math.sin(-playerAngle) + relZ * math.cos(-playerAngle)
+                
+                -- Scale to radar size
+                local radarX = 0.5 + (rotatedX * 0.45)
+                local radarY = 0.5 - (rotatedZ * 0.45)
+                
+                -- Clamp to circle
+                local distFromCenter = math.sqrt((radarX - 0.5)^2 + (radarY - 0.5)^2)
+                if distFromCenter > 0.45 then
+                    local scale = 0.45 / distFromCenter
+                    radarX = 0.5 + (radarX - 0.5) * scale
+                    radarY = 0.5 + (radarY - 0.5) * scale
+                end
+                
+                dot.Position = UDim2.new(radarX, -6, radarY, -6)
+                
+                -- Color based on distance
+                if distance <= CLOSE_DISTANCE then
+                    dot.BackgroundColor3 = Color3.fromRGB(255, 50, 50)
+                else
+                    dot.BackgroundColor3 = Color3.fromRGB(255, 165, 0)
+                end
+                
+                -- NPC direction indicator
+                local npcLook = npcRoot.CFrame.LookVector
+                local npcAngle = math.deg(math.atan2(npcLook.X, npcLook.Z))
+                local relativeAngle = npcAngle - math.deg(playerAngle)
+                dot.Rotation = -relativeAngle
+                
+                -- Distance label
+                dot.Distance.Text = math.floor(distance) .. "m"
+                
+                dot.Visible = true
+            end
+        end
+    end
+end)
+
+print("NPC Radar loaded successfully!")
+print("Drag the title bar to move the radar")
+print("Use the slider to adjust radius (default: 150, max: 500)")
+print("Click the lock icon to lock/unlock the slider")
+print("Click the green dot to toggle radar on/off")
