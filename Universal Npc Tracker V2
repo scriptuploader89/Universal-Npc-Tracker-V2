@@ -1,553 +1,879 @@
--- NPC Radar Script
--- Universal compatibility for PC and Mobile
--- Works on all executors
+local CONFIG = {
+    RadarSize = 180,             -- Size of the radar circle in pixels
+    DefaultRadius = 150,         -- Default detection radius in studs
+    MaxRadius = 500,             -- Maximum slider radius
+    MinRadius = 10,              -- Minimum slider radius
+    RefreshRate = 0.1,           -- How often the radar updates (seconds)
+    Colors = {
+        RadarBg = Color3.fromRGB(20, 22, 28),
+        RadarBorder = Color3.fromRGB(60, 65, 80),
+        RadarGrid = Color3.fromRGB(40, 42, 50),
+        PlayerArrow = Color3.fromRGB(100, 200, 255),
+        CompassN = Color3.fromRGB(255, 80, 80),
+        CompassEWS = Color3.fromRGB(180, 180, 190),
+        NPCRed = Color3.fromRGB(255, 60, 60),
+        NPCOrange = Color3.fromRGB(255, 160, 40),
+        NPCText = Color3.fromRGB(240, 240, 245),
+        SliderTrack = Color3.fromRGB(50, 55, 65),
+        SliderFill = Color3.fromRGB(100, 200, 255),
+        SliderThumb = Color3.fromRGB(140, 220, 255),
+        LockActive = Color3.fromRGB(255, 80, 80),
+        LockInactive = Color3.fromRGB(100, 200, 100),
+        BGPanel = Color3.fromRGB(16, 18, 22),
+        TitleText = Color3.fromRGB(220, 220, 230),
+        DistanceText = Color3.fromRGB(200, 200, 210),
+    },
+    DistanceThreshold = 75,      -- Studs: below this = red dot, above = orange
+}
 
+-- =====================================================================
+-- SERVICES
+-- =====================================================================
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
 local UserInputService = game:GetService("UserInputService")
-local Workspace = game:GetService("Workspace")
+local TweenService = game:GetService("TweenService")
+local CoreGui = game:GetService("CoreGui")
 
-local LocalPlayer = Players.LocalPlayer
-local Camera = Workspace.CurrentCamera
+-- =====================================================================
+-- UTILITY FUNCTIONS
+-- =====================================================================
+local function IsNPC(instance)
+    if not instance then return false end
+    -- NPCs are typically non-player characters with Humanoid
+    local isPlayer = Players:GetPlayerFromCharacter(instance)
+    if isPlayer then return false end
 
--- Configuration
-local DEFAULT_RADIUS = 150
-local MAX_RADIUS = 500
-local MIN_RADIUS = 10
-local CLOSE_DISTANCE = 50
-local RADAR_SIZE = 200
-local RADAR_PADDING = 20
+    -- Must have a Humanoid
+    local humanoid = instance:FindFirstChildOfClass("Humanoid")
+    if not humanoid then return false end
 
--- State
-local currentRadius = DEFAULT_RADIUS
-local isLocked = false
-local isDragging = false
-local radarEnabled = true
+    -- Must be a model (character-like)
+    if not instance:IsA("Model") then return false end
 
--- Create main GUI
-local ScreenGui = Instance.new("ScreenGui")
-ScreenGui.Name = "NPCRadar"
-ScreenGui.ResetOnSpawn = false
-ScreenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+    -- Health > 0 means alive
+    if humanoid.Health <= 0 then return false end
 
--- Handle different executor GUI parents
-local function setupGui()
-    pcall(function()
-        if syn and syn.protect_gui then
-            syn.protect_gui(ScreenGui)
-            ScreenGui.Parent = game:GetService("CoreGui")
-        elseif gethui then
-            ScreenGui.Parent = gethui()
-        elseif KRNL_LOADED then
-            ScreenGui.Parent = game:GetService("CoreGui")
-        else
-            ScreenGui.Parent = game:GetService("CoreGui")
-        end
-    end)
-    
-    if not ScreenGui.Parent then
-        ScreenGui.Parent = LocalPlayer:WaitForChild("PlayerGui")
-    end
-end
+    -- Has a HumanoidRootPart or PrimaryPart for position
+    local root = instance:FindFirstChild("HumanoidRootPart") or instance.PrimaryPart
+    if not root then return false end
 
-setupGui()
-
--- Main container
-local MainFrame = Instance.new("Frame")
-MainFrame.Name = "MainFrame"
-MainFrame.Size = UDim2.new(0, RADAR_SIZE + 40, 0, RADAR_SIZE + 120)
-MainFrame.Position = UDim2.new(0, 10, 0.5, -(RADAR_SIZE + 120) / 2)
-MainFrame.BackgroundColor3 = Color3.fromRGB(30, 30, 30)
-MainFrame.BackgroundTransparency = 0.3
-MainFrame.BorderSizePixel = 0
-MainFrame.Parent = ScreenGui
-
-local MainCorner = Instance.new("UICorner")
-MainCorner.CornerRadius = UDim.new(0, 10)
-MainCorner.Parent = MainFrame
-
--- Title bar
-local TitleBar = Instance.new("Frame")
-TitleBar.Name = "TitleBar"
-TitleBar.Size = UDim2.new(1, 0, 0, 25)
-TitleBar.BackgroundColor3 = Color3.fromRGB(20, 20, 20)
-TitleBar.BackgroundTransparency = 0.3
-TitleBar.BorderSizePixel = 0
-TitleBar.Parent = MainFrame
-
-local TitleCorner = Instance.new("UICorner")
-TitleCorner.CornerRadius = UDim.new(0, 10)
-TitleCorner.Parent = TitleBar
-
-local TitleLabel = Instance.new("TextLabel")
-TitleLabel.Name = "Title"
-TitleLabel.Size = UDim2.new(1, -50, 1, 0)
-TitleLabel.Position = UDim2.new(0, 10, 0, 0)
-TitleLabel.BackgroundTransparency = 1
-TitleLabel.Text = "NPC Radar"
-TitleLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
-TitleLabel.TextSize = 14
-TitleLabel.Font = Enum.Font.GothamBold
-TitleLabel.TextXAlignment = Enum.TextXAlignment.Left
-TitleLabel.Parent = TitleBar
-
--- Toggle button
-local ToggleButton = Instance.new("TextButton")
-ToggleButton.Name = "Toggle"
-ToggleButton.Size = UDim2.new(0, 20, 0, 20)
-ToggleButton.Position = UDim2.new(1, -25, 0.5, -10)
-ToggleButton.BackgroundColor3 = Color3.fromRGB(0, 200, 0)
-ToggleButton.BorderSizePixel = 0
-ToggleButton.Text = ""
-ToggleButton.Parent = TitleBar
-
-local ToggleCorner = Instance.new("UICorner")
-ToggleCorner.CornerRadius = UDim.new(0, 5)
-ToggleCorner.Parent = ToggleButton
-
--- Compass display
-local CompassFrame = Instance.new("Frame")
-CompassFrame.Name = "Compass"
-CompassFrame.Size = UDim2.new(1, -20, 0, 20)
-CompassFrame.Position = UDim2.new(0, 10, 0, 28)
-CompassFrame.BackgroundTransparency = 1
-CompassFrame.Parent = MainFrame
-
-local CompassLabel = Instance.new("TextLabel")
-CompassLabel.Name = "Direction"
-CompassLabel.Size = UDim2.new(1, 0, 1, 0)
-CompassLabel.BackgroundTransparency = 1
-CompassLabel.Text = "N"
-CompassLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
-CompassLabel.TextSize = 16
-CompassLabel.Font = Enum.Font.GothamBold
-CompassLabel.Parent = CompassFrame
-
--- Radar container (circular)
-local RadarContainer = Instance.new("Frame")
-RadarContainer.Name = "RadarContainer"
-RadarContainer.Size = UDim2.new(0, RADAR_SIZE, 0, RADAR_SIZE)
-RadarContainer.Position = UDim2.new(0.5, -RADAR_SIZE / 2, 0, 50)
-RadarContainer.BackgroundColor3 = Color3.fromRGB(10, 10, 10)
-RadarContainer.BackgroundTransparency = 0.2
-RadarContainer.BorderSizePixel = 0
-RadarContainer.ClipsDescendants = true
-RadarContainer.Parent = MainFrame
-
-local RadarCorner = Instance.new("UICorner")
-RadarCorner.CornerRadius = UDim.new(0.5, 0)
-RadarCorner.Parent = RadarContainer
-
--- Radar border
-local RadarBorder = Instance.new("UIStroke")
-RadarBorder.Color = Color3.fromRGB(100, 100, 100)
-RadarBorder.Thickness = 2
-RadarBorder.Parent = RadarContainer
-
--- Crosshairs
-local CrosshairV = Instance.new("Frame")
-CrosshairV.Name = "CrosshairV"
-CrosshairV.Size = UDim2.new(0, 1, 1, 0)
-CrosshairV.Position = UDim2.new(0.5, 0, 0, 0)
-CrosshairV.BackgroundColor3 = Color3.fromRGB(60, 60, 60)
-CrosshairV.BackgroundTransparency = 0.5
-CrosshairV.BorderSizePixel = 0
-CrosshairV.Parent = RadarContainer
-
-local CrosshairH = Instance.new("Frame")
-CrosshairH.Name = "CrosshairH"
-CrosshairH.Size = UDim2.new(1, 0, 0, 1)
-CrosshairH.Position = UDim2.new(0, 0, 0.5, 0)
-CrosshairH.BackgroundColor3 = Color3.fromRGB(60, 60, 60)
-CrosshairH.BackgroundTransparency = 0.5
-CrosshairH.BorderSizePixel = 0
-CrosshairH.Parent = RadarContainer
-
--- Cardinal direction labels on radar
-local function createCardinalLabel(text, pos)
-    local label = Instance.new("TextLabel")
-    label.Size = UDim2.new(0, 20, 0, 20)
-    label.Position = pos
-    label.BackgroundTransparency = 1
-    label.Text = text
-    label.TextColor3 = Color3.fromRGB(150, 150, 150)
-    label.TextSize = 12
-    label.Font = Enum.Font.GothamBold
-    label.Parent = RadarContainer
-    return label
-end
-
-createCardinalLabel("N", UDim2.new(0.5, -10, 0, 2))
-createCardinalLabel("S", UDim2.new(0.5, -10, 1, -18))
-createCardinalLabel("E", UDim2.new(1, -18, 0.5, -10))
-createCardinalLabel("W", UDim2.new(0, 2, 0.5, -10))
-
--- Player arrow (center)
-local PlayerArrow = Instance.new("ImageLabel")
-PlayerArrow.Name = "PlayerArrow"
-PlayerArrow.Size = UDim2.new(0, 20, 0, 20)
-PlayerArrow.Position = UDim2.new(0.5, -10, 0.5, -10)
-PlayerArrow.BackgroundTransparency = 1
-PlayerArrow.Image = "rbxassetid://6031091004"
-PlayerArrow.ImageColor3 = Color3.fromRGB(0, 255, 0)
-PlayerArrow.Parent = RadarContainer
-
--- Slider container
-local SliderFrame = Instance.new("Frame")
-SliderFrame.Name = "SliderFrame"
-SliderFrame.Size = UDim2.new(1, -20, 0, 40)
-SliderFrame.Position = UDim2.new(0, 10, 0, RADAR_SIZE + 55)
-SliderFrame.BackgroundTransparency = 1
-SliderFrame.Parent = MainFrame
-
-local RadiusLabel = Instance.new("TextLabel")
-RadiusLabel.Name = "RadiusLabel"
-RadiusLabel.Size = UDim2.new(1, 0, 0, 15)
-RadiusLabel.BackgroundTransparency = 1
-RadiusLabel.Text = "Radius: " .. currentRadius
-RadiusLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
-RadiusLabel.TextSize = 12
-RadiusLabel.Font = Enum.Font.Gotham
-RadiusLabel.Parent = SliderFrame
-
-local SliderBar = Instance.new("Frame")
-SliderBar.Name = "SliderBar"
-SliderBar.Size = UDim2.new(1, -40, 0, 8)
-SliderBar.Position = UDim2.new(0, 0, 0, 20)
-SliderBar.BackgroundColor3 = Color3.fromRGB(50, 50, 50)
-SliderBar.BorderSizePixel = 0
-SliderBar.Parent = SliderFrame
-
-local SliderBarCorner = Instance.new("UICorner")
-SliderBarCorner.CornerRadius = UDim.new(0, 4)
-SliderBarCorner.Parent = SliderBar
-
-local SliderFill = Instance.new("Frame")
-SliderFill.Name = "Fill"
-SliderFill.Size = UDim2.new((currentRadius - MIN_RADIUS) / (MAX_RADIUS - MIN_RADIUS), 0, 1, 0)
-SliderFill.BackgroundColor3 = Color3.fromRGB(0, 150, 255)
-SliderFill.BorderSizePixel = 0
-SliderFill.Parent = SliderBar
-
-local SliderFillCorner = Instance.new("UICorner")
-SliderFillCorner.CornerRadius = UDim.new(0, 4)
-SliderFillCorner.Parent = SliderFill
-
-local SliderKnob = Instance.new("Frame")
-SliderKnob.Name = "Knob"
-SliderKnob.Size = UDim2.new(0, 16, 0, 16)
-SliderKnob.Position = UDim2.new((currentRadius - MIN_RADIUS) / (MAX_RADIUS - MIN_RADIUS), -8, 0.5, -8)
-SliderKnob.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-SliderKnob.BorderSizePixel = 0
-SliderKnob.Parent = SliderBar
-
-local SliderKnobCorner = Instance.new("UICorner")
-SliderKnobCorner.CornerRadius = UDim.new(0.5, 0)
-SliderKnobCorner.Parent = SliderKnob
-
--- Lock button
-local LockButton = Instance.new("TextButton")
-LockButton.Name = "LockButton"
-LockButton.Size = UDim2.new(0, 30, 0, 20)
-LockButton.Position = UDim2.new(1, -30, 0, 17)
-LockButton.BackgroundColor3 = Color3.fromRGB(50, 50, 50)
-LockButton.BorderSizePixel = 0
-LockButton.Text = "🔓"
-LockButton.TextSize = 12
-LockButton.Font = Enum.Font.Gotham
-LockButton.TextColor3 = Color3.fromRGB(255, 255, 255)
-LockButton.Parent = SliderFrame
-
-local LockCorner = Instance.new("UICorner")
-LockCorner.CornerRadius = UDim.new(0, 5)
-LockCorner.Parent = LockButton
-
--- NPC dots container
-local NPCDotsFolder = Instance.new("Folder")
-NPCDotsFolder.Name = "NPCDots"
-NPCDotsFolder.Parent = RadarContainer
-
--- Pool of reusable NPC dots
-local dotPool = {}
-local activeDots = {}
-
-local function createDot()
-    local dotFrame = Instance.new("Frame")
-    dotFrame.Size = UDim2.new(0, 12, 0, 12)
-    dotFrame.BackgroundColor3 = Color3.fromRGB(255, 0, 0)
-    dotFrame.BorderSizePixel = 0
-    dotFrame.Visible = false
-    dotFrame.Parent = NPCDotsFolder
-    
-    local dotCorner = Instance.new("UICorner")
-    dotCorner.CornerRadius = UDim.new(0.5, 0)
-    dotCorner.Parent = dotFrame
-    
-    local directionIndicator = Instance.new("Frame")
-    directionIndicator.Name = "Direction"
-    directionIndicator.Size = UDim2.new(0, 4, 0, 8)
-    directionIndicator.Position = UDim2.new(0.5, -2, 0, -6)
-    directionIndicator.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-    directionIndicator.BorderSizePixel = 0
-    directionIndicator.Parent = dotFrame
-    
-    local dirCorner = Instance.new("UICorner")
-    dirCorner.CornerRadius = UDim.new(0, 2)
-    dirCorner.Parent = directionIndicator
-    
-    local distLabel = Instance.new("TextLabel")
-    distLabel.Name = "Distance"
-    distLabel.Size = UDim2.new(0, 40, 0, 12)
-    distLabel.Position = UDim2.new(0.5, -20, 1, 2)
-    distLabel.BackgroundTransparency = 1
-    distLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
-    distLabel.TextSize = 8
-    distLabel.Font = Enum.Font.GothamBold
-    distLabel.TextStrokeTransparency = 0.5
-    distLabel.Parent = dotFrame
-    
-    return dotFrame
-end
-
-local function getDot()
-    for _, dot in ipairs(dotPool) do
-        if not dot.Visible then
-            return dot
-        end
-    end
-    local newDot = createDot()
-    table.insert(dotPool, newDot)
-    return newDot
-end
-
-local function hideAllDots()
-    for _, dot in ipairs(dotPool) do
-        dot.Visible = false
-    end
-end
-
--- Utility functions
-local function getCompassDirection(angle)
-    local directions = {"N", "NE", "E", "SE", "S", "SW", "W", "NW"}
-    local index = math.floor(((angle + 22.5) % 360) / 45) + 1
-    return directions[index]
-end
-
-local function isNPC(model)
-    if not model:IsA("Model") then return false end
-    if not model:FindFirstChild("Humanoid") then return false end
-    if not model:FindFirstChild("HumanoidRootPart") then return false end
-    
-    -- Check if it belongs to a player
-    for _, player in ipairs(Players:GetPlayers()) do
-        if player.Character == model then
-            return false
-        end
-    end
-    
     return true
 end
 
-local function getNPCs()
-    local npcs = {}
-    
-    local function searchFolder(folder)
-        for _, obj in ipairs(folder:GetChildren()) do
-            if isNPC(obj) then
-                table.insert(npcs, obj)
-            elseif obj:IsA("Folder") or obj:IsA("Model") then
-                searchFolder(obj)
+local function GetNPCPosition(npc)
+    local root = npc:FindFirstChild("HumanoidRootPart") or npc.PrimaryPart
+    if root then
+        return root.Position
+    end
+    return nil
+end
+
+local function GetNPCDirection(npc)
+    local root = npc:FindFirstChild("HumanoidRootPart") or npc.PrimaryPart
+    if root then
+        -- The CFrame lookVector gives the direction the NPC is facing
+        local lookVector = root.CFrame.LookVector
+        return math.atan2(-lookVector.X, -lookVector.Z) -- angle in radians
+    end
+    return 0
+end
+
+local function GetCompassDirection(cframe)
+    local _, _, _, _, _, _, 
+          _, _, _, 
+          a, b, c = cframe:GetComponents()
+    -- Forward vector from CFrame
+    local forward = Vector3.new(-a, -b, -c)
+    local angle = math.atan2(forward.X, -forward.Z)
+    local degrees = math.deg(angle)
+    if degrees < 0 then degrees = degrees + 360 end
+
+    if degrees >= 315 or degrees < 45 then return "N", degrees end
+    if degrees >= 45 and degrees < 135 then return "E", degrees end
+    if degrees >= 135 and degrees < 225 then return "S", degrees end
+    if degrees >= 225 and degrees < 315 then return "W", degrees end
+    return "N", degrees
+end
+
+local function RoundNumber(num)
+    return math.floor(num * 10 + 0.5) / 10
+end
+
+-- =====================================================================
+-- MAIN GUI CREATION
+-- =====================================================================
+local function CreateRadar()
+    -- Make sure we have a player
+    local player = Players.LocalPlayer
+    if not player then
+        Players:GetPropertyChangedSignal("LocalPlayer"):Wait()
+        player = Players.LocalPlayer
+    end
+    local character = player.Character or player.CharacterAdded:Wait()
+
+    -- =====================================================================
+    -- CREATE THE SCREEN GUI
+    -- =====================================================================
+    local gui = Instance.new("ScreenGui")
+    gui.Name = "NPCRadarGUI"
+    gui.DisplayOrder = 100
+    gui.ResetOnSpawn = false
+    gui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+    gui.IgnoreGuiInset = true
+
+    -- Try CoreGui first, fallback to PlayerGui
+    local parentGui = CoreGui
+    pcall(function()
+        gui.Parent = parentGui
+    end)
+    if not gui.Parent then
+        parentGui = player:WaitForChild("PlayerGui")
+        gui.Parent = parentGui
+    end
+
+    -- =====================================================================
+    -- MAIN PANEL
+    -- =====================================================================
+    local mainPanel = Instance.new("Frame")
+    mainPanel.Name = "MainPanel"
+    mainPanel.Size = UDim2.new(0, 260, 0, 340)
+    mainPanel.Position = UDim2.new(0, 20, 0.5, -170)
+    mainPanel.BackgroundColor3 = CONFIG.Colors.BGPanel
+    mainPanel.BackgroundTransparency = 0.08
+    mainPanel.BorderSizePixel = 0
+    mainPanel.Parent = gui
+
+    -- Rounded corners via UICorner
+    local corner = Instance.new("UICorner")
+    corner.CornerRadius = UDim.new(0, 14)
+    corner.Parent = mainPanel
+
+    -- Stroke
+    local stroke = Instance.new("UIStroke")
+    stroke.Color = CONFIG.Colors.RadarBorder
+    stroke.Thickness = 1.5
+    stroke.Transparency = 0.4
+    stroke.Parent = mainPanel
+
+    -- Make draggable
+    local dragging = false
+    local dragStart = Vector2.new()
+    local panelStart = UDim2.new()
+
+    local function onDragBegin(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 or
+           input.UserInputType == Enum.UserInputType.Touch then
+            dragging = true
+            dragStart = input.Position
+            panelStart = mainPanel.Position
+        end
+    end
+
+    local function onDragEnd(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 or
+           input.UserInputType == Enum.UserInputType.Touch then
+            dragging = false
+        end
+    end
+
+    local function onDragInput(input)
+        if dragging then
+            local delta = input.Position - dragStart
+            mainPanel.Position = UDim2.new(
+                panelStart.X.Scale,
+                panelStart.X.Offset + delta.X,
+                panelStart.Y.Scale,
+                panelStart.Y.Offset + delta.Y
+            )
+        end
+    end
+
+    mainPanel.InputBegan:Connect(onDragBegin)
+    mainPanel.InputEnded:Connect(onDragEnd)
+    mainPanel.InputChanged:Connect(onDragInput)
+
+    -- =====================================================================
+    -- TITLE
+    -- =====================================================================
+    local titleLabel = Instance.new("TextLabel")
+    titleLabel.Name = "Title"
+    titleLabel.Size = UDim2.new(1, 0, 0, 32)
+    titleLabel.Position = UDim2.new(0, 0, 0, 0)
+    titleLabel.BackgroundTransparency = 1
+    titleLabel.Text = "⬡ NPC RADAR"
+    titleLabel.TextColor3 = CONFIG.Colors.TitleText
+    titleLabel.TextSize = 16
+    titleLabel.TextFont = Enum.Font.GothamBold
+    titleLabel.Font = Enum.Font.GothamBold
+    titleLabel.TextXAlignment = Enum.TextXAlignment.Center
+    titleLabel.TextYAlignment = Enum.TextYAlignment.Center
+    titleLabel.Parent = mainPanel
+
+    -- =====================================================================
+    -- COMPASS DISPLAY
+    -- =====================================================================
+    local compassFrame = Instance.new("Frame")
+    compassFrame.Name = "CompassFrame"
+    compassFrame.Size = UDim2.new(1, -20, 0, 24)
+    compassFrame.Position = UDim2.new(0, 10, 0, 32)
+    compassFrame.BackgroundTransparency = 1
+    compassFrame.Parent = mainPanel
+
+    local compassLabel = Instance.new("TextLabel")
+    compassLabel.Name = "CompassLabel"
+    compassLabel.Size = UDim2.new(1, 0, 1, 0)
+    compassLabel.BackgroundTransparency = 1
+    compassLabel.Text = "N  |  E  |  S  |  W"
+    compassLabel.TextColor3 = CONFIG.Colors.CompassEWS
+    compassLabel.TextSize = 14
+    compassLabel.TextFont = Enum.Font.GothamBold
+    compassLabel.Font = Enum.Font.GothamBold
+    compassLabel.TextXAlignment = Enum.TextXAlignment.Center
+    compassLabel.TextYAlignment = Enum.TextYAlignment.Center
+    compassLabel.Parent = compassFrame
+
+    local directionIndicator = Instance.new("TextLabel")
+    directionIndicator.Name = "DirectionIndicator"
+    directionIndicator.Size = UDim2.new(0, 40, 0, 24)
+    directionIndicator.Position = UDim2.new(1, -50, 0, 0)
+    directionIndicator.BackgroundTransparency = 1
+    directionIndicator.Text = "N"
+    directionIndicator.TextColor3 = CONFIG.Colors.CompassN
+    directionIndicator.TextSize = 16
+    directionIndicator.TextFont = Enum.Font.GothamBold
+    directionIndicator.Font = Enum.Font.GothamBold
+    directionIndicator.TextXAlignment = Enum.TextXAlignment.Center
+    directionIndicator.TextYAlignment = Enum.TextYAlignment.Center
+    directionIndicator.Parent = compassFrame
+
+    -- =====================================================================
+    -- RADAR CANVAS (Circular region)
+    -- =====================================================================
+    local radarCanvasOuter = Instance.new("Frame")
+    radarCanvasOuter.Name = "RadarCanvasOuter"
+    radarCanvasOuter.Size = UDim2.new(0, CONFIG.RadarSize + 4, 0, CONFIG.RadarSize + 4)
+    radarCanvasOuter.Position = UDim2.new(0.5, -(CONFIG.RadarSize + 4) / 2, 0, 60)
+    radarCanvasOuter.BackgroundColor3 = CONFIG.Colors.RadarBorder
+    radarCanvasOuter.BackgroundTransparency = 0.5
+    radarCanvasOuter.BorderSizePixel = 0
+    radarCanvasOuter.Parent = mainPanel
+
+    local radarOuterCorner = Instance.new("UICorner")
+    radarOuterCorner.CornerRadius = UDim.new(0, (CONFIG.RadarSize + 4) / 2)
+    radarOuterCorner.Parent = radarCanvasOuter
+
+    local radarCanvas = Instance.new("Frame")
+    radarCanvas.Name = "RadarCanvas"
+    radarCanvas.Size = UDim2.new(0, CONFIG.RadarSize, 0, CONFIG.RadarSize)
+    radarCanvas.Position = UDim2.new(0, 2, 0, 2)
+    radarCanvas.BackgroundColor3 = CONFIG.Colors.RadarBg
+    radarCanvas.BorderSizePixel = 0
+    radarCanvas.ClipsDescendants = true
+    radarCanvas.Parent = radarCanvasOuter
+
+    local radarCorner = Instance.new("UICorner")
+    radarCorner.CornerRadius = UDim.new(0, CONFIG.RadarSize / 2)
+    radarCorner.Parent = radarCanvas
+
+    -- Grid overlay (3 concentric rings + cross lines via image labels)
+    for i = 1, 3 do
+        local ring = Instance.new("ImageLabel")
+        ring.Name = "Ring" .. i
+        local ringSize = (CONFIG.RadarSize / 2) * (i / 3) * 2
+        ring.Size = UDim2.new(0, ringSize, 0, ringSize)
+        ring.Position = UDim2.new(0.5, -ringSize / 2, 0.5, -ringSize / 2)
+        ring.BackgroundTransparency = 1
+        ring.Image = "rbxasset://textures/ui/GuiImagePlaceholder.png"
+        ring.ImageColor3 = CONFIG.Colors.RadarGrid
+        ring.ImageTransparency = 0.6
+        ring.Parent = radarCanvas
+
+        -- Make it circular
+        local ringCorner = Instance.new("UICorner")
+        ringCorner.CornerRadius = UDim.new(0, ringSize / 2)
+        ringCorner.Parent = ring
+    end
+
+    -- Cross lines
+    local function createLine(name, size, pos, rot)
+        local line = Instance.new("Frame")
+        line.Name = name
+        line.Size = size
+        line.Position = pos
+        line.Rotation = rot or 0
+        line.BackgroundColor3 = CONFIG.Colors.RadarGrid
+        line.BackgroundTransparency = 0.5
+        line.BorderSizePixel = 0
+        line.Parent = radarCanvas
+        return line
+    end
+
+    createLine("HLine", UDim2.new(0.85, 0, 0, 1), UDim2.new(0.075, 0, 0.5, -0.5), 0)
+    createLine("VLine", UDim2.new(0, 1, 0.85, 0), UDim2.new(0.5, -0.5, 0.075, 0), 0)
+
+    -- Create a container for the radar blips
+    local blipContainer = Instance.new("Frame")
+    blipContainer.Name = "BlipContainer"
+    blipContainer.Size = UDim2.new(1, 0, 1, 0)
+    blipContainer.BackgroundTransparency = 1
+    blipContainer.Parent = radarCanvas
+
+    -- Player arrow indicator
+    local playerArrow = Instance.new("ImageLabel")
+    playerArrow.Name = "PlayerArrow"
+    playerArrow.Size = UDim2.new(0, 14, 0, 14)
+    playerArrow.Position = UDim2.new(0.5, -7, 0.5, -7)
+    playerArrow.BackgroundTransparency = 1
+    playerArrow.Image = "rbxasset://textures/ui/GuiImagePlaceholder.png"
+    playerArrow.ImageColor3 = CONFIG.Colors.PlayerArrow
+    playerArrow.ImageTransparency = 0
+    playerArrow.ZIndex = 10
+    playerArrow.Parent = blipContainer
+
+    -- Draw the player arrow using a custom approach: text label (uni-safe)
+    -- Actually, use a small frame rotated to look like an arrow
+    -- Let's use a text label with a triangle unicode
+    local arrowText = Instance.new("TextLabel")
+    arrowText.Name = "ArrowText"
+    arrowText.Size = UDim2.new(1, 0, 1, 0)
+    arrowText.BackgroundTransparency = 1
+    arrowText.Text = "▲"
+    arrowText.TextColor3 = CONFIG.Colors.PlayerArrow
+    arrowText.TextSize = 16
+    arrowText.TextFont = Enum.Font.GothamBold
+    arrowText.Font = Enum.Font.GothamBold
+    arrowText.TextXAlignment = Enum.TextXAlignment.Center
+    arrowText.TextYAlignment = Enum.TextYAlignment.Center
+    arrowText.Parent = playerArrow
+
+    -- =====================================================================
+    -- SLIDER SECTION
+    -- =====================================================================
+    local sliderFrame = Instance.new("Frame")
+    sliderFrame.Name = "SliderFrame"
+    sliderFrame.Size = UDim2.new(1, -20, 0, 50)
+    sliderFrame.Position = UDim2.new(0, 10, 0, CONFIG.RadarSize + 70)
+    sliderFrame.BackgroundTransparency = 1
+    sliderFrame.Parent = mainPanel
+
+    -- Radius value label
+    local radiusLabel = Instance.new("TextLabel")
+    radiusLabel.Name = "RadiusLabel"
+    radiusLabel.Size = UDim2.new(0.7, 0, 0, 20)
+    radiusLabel.Position = UDim2.new(0, 0, 0, 0)
+    radiusLabel.BackgroundTransparency = 1
+    radiusLabel.Text = "🔍 Radius: 150"
+    radiusLabel.TextColor3 = CONFIG.Colors.TitleText
+    radiusLabel.TextSize = 13
+    radiusLabel.TextFont = Enum.Font.Gotham
+    radiusLabel.Font = Enum.Font.Gotham
+    radiusLabel.TextXAlignment = Enum.TextXAlignment.Left
+    radiusLabel.TextYAlignment = Enum.TextYAlignment.Center
+    radiusLabel.Parent = sliderFrame
+
+    -- Lock button
+    local lockButton = Instance.new("ImageButton")
+    lockButton.Name = "LockButton"
+    lockButton.Size = UDim2.new(0, 28, 0, 28)
+    lockButton.Position = UDim2.new(1, -32, 0, -2)
+    lockButton.BackgroundColor3 = CONFIG.Colors.LockInactive
+    lockButton.BackgroundTransparency = 0.3
+    lockButton.BorderSizePixel = 0
+    lockButton.Parent = sliderFrame
+
+    local lockCorner = Instance.new("UICorner")
+    lockCorner.CornerRadius = UDim.new(0, 6)
+    lockCorner.Parent = lockButton
+
+    local lockIcon = Instance.new("TextLabel")
+    lockIcon.Name = "LockIcon"
+    lockIcon.Size = UDim2.new(1, 0, 1, 0)
+    lockIcon.BackgroundTransparency = 1
+    lockIcon.Text = "🔓"
+    lockIcon.TextSize = 16
+    lockIcon.TextColor3 = Color3.fromRGB(255, 255, 255)
+    lockIcon.TextXAlignment = Enum.TextXAlignment.Center
+    lockIcon.TextYAlignment = Enum.TextYAlignment.Center
+    lockIcon.Parent = lockButton
+
+    local isLocked = false
+
+    local function updateLockUI()
+        if isLocked then
+            lockButton.BackgroundColor3 = CONFIG.Colors.LockActive
+            lockIcon.Text = "🔒"
+            lockButton.BackgroundTransparency = 0.2
+        else
+            lockButton.BackgroundColor3 = CONFIG.Colors.LockInactive
+            lockIcon.Text = "🔓"
+            lockButton.BackgroundTransparency = 0.3
+        end
+    end
+
+    lockButton.MouseButton1Click:Connect(function()
+        isLocked = not isLocked
+        updateLockUI()
+    end)
+
+    -- Slider background track
+    local sliderBg = Instance.new("Frame")
+    sliderBg.Name = "SliderBg"
+    sliderBg.Size = UDim2.new(0.9, -10, 0, 6)
+    sliderBg.Position = UDim2.new(0, 0, 0, 28)
+    sliderBg.BackgroundColor3 = CONFIG.Colors.SliderTrack
+    sliderBg.BackgroundTransparency = 0.3
+    sliderBg.BorderSizePixel = 0
+    sliderBg.Parent = sliderFrame
+
+    local sliderBgCorner = Instance.new("UICorner")
+    sliderBgCorner.CornerRadius = UDim.new(0, 3)
+    sliderBgCorner.Parent = sliderBg
+
+    -- Slider fill
+    local sliderFill = Instance.new("Frame")
+    sliderFill.Name = "SliderFill"
+    sliderFill.Size = UDim2.new(0.5, 0, 1, 0)
+    sliderFill.BackgroundColor3 = CONFIG.Colors.SliderFill
+    sliderFill.BackgroundTransparency = 0.15
+    sliderFill.BorderSizePixel = 0
+    sliderFill.Parent = sliderBg
+
+    local sliderFillCorner = Instance.new("UICorner")
+    sliderFillCorner.CornerRadius = UDim.new(0, 3)
+    sliderFillCorner.Parent = sliderFill
+
+    -- Slider thumb (draggable)
+    local sliderThumb = Instance.new("Frame")
+    sliderThumb.Name = "SliderThumb"
+    sliderThumb.Size = UDim2.new(0, 18, 0, 18)
+    sliderThumb.Position = UDim2.new(0.5, -9, 0, -6)
+    sliderThumb.BackgroundColor3 = CONFIG.Colors.SliderThumb
+    sliderThumb.BorderSizePixel = 0
+    sliderThumb.Parent = sliderBg
+
+    local thumbCorner = Instance.new("UICorner")
+    thumbCorner.CornerRadius = UDim.new(0, 9)
+    thumbCorner.Parent = sliderThumb
+
+    -- Slider logic
+    local radarRadius = CONFIG.DefaultRadius
+    local sliderDragging = false
+    local sliderWidth = sliderBg.AbsoluteSize.X
+
+    local function updateSliderPosition(ratio)
+        ratio = math.clamp(ratio, 0, 1)
+        local thumbPos = (ratio * (sliderBg.AbsoluteSize.X - 18)) / sliderBg.AbsoluteSize.X
+        -- Use offset-based positioning
+        sliderThumb.Position = UDim2.new(ratio, -9, 0, -6)
+        sliderFill.Size = UDim2.new(ratio, 0, 1, 0)
+        radarRadius = math.floor(CONFIG.MinRadius + ratio * (CONFIG.MaxRadius - CONFIG.MinRadius))
+        radiusLabel.Text = "🔍 Radius: " .. radarRadius
+    end
+
+    local function getSliderRatio(inputPos)
+        local bgAbsPos = sliderBg.AbsolutePosition
+        local bgAbsSize = sliderBg.AbsoluteSize.X
+        local relativeX = inputPos.X - bgAbsPos.X
+        return math.clamp(relativeX / bgAbsSize, 0, 1)
+    end
+
+    local function onSliderInputBegan(input)
+        if isLocked then return end
+        if input.UserInputType == Enum.UserInputType.MouseButton1 or
+           input.UserInputType == Enum.UserInputType.Touch then
+            sliderDragging = true
+            local ratio = getSliderRatio(input.Position)
+            updateSliderPosition(ratio)
+        end
+    end
+
+    local function onSliderInputEnded(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 or
+           input.UserInputType == Enum.UserInputType.Touch then
+            sliderDragging = false
+        end
+    end
+
+    local function onSliderInputChanged(input)
+        if sliderDragging and not isLocked then
+            local ratio = getSliderRatio(input.Position)
+            updateSliderPosition(ratio)
+        end
+    end
+
+    sliderThumb.InputBegan:Connect(onSliderInputBegan)
+    sliderThumb.InputEnded:Connect(onSliderInputEnded)
+    sliderThumb.InputChanged:Connect(onSliderInputChanged)
+    sliderBg.InputBegan:Connect(function(input)
+        if isLocked then return end
+        if input.UserInputType == Enum.UserInputType.MouseButton1 or
+           input.UserInputType == Enum.UserInputType.Touch then
+            local ratio = getSliderRatio(input.Position)
+            updateSliderPosition(ratio)
+        end
+    end)
+
+    -- Also track on UserInputService for smoother drag
+    UserInputService.InputChanged:Connect(function(input, processed)
+        if processed then return end
+        if sliderDragging and not isLocked then
+            local ratio = getSliderRatio(input.Position)
+            updateSliderPosition(ratio)
+        end
+    end)
+
+    UserInputService.InputEnded:Connect(function(input, processed)
+        if processed then return end
+        if sliderDragging then
+            sliderDragging = false
+        end
+    end)
+
+    -- Handle resize for slider width
+    sliderBg:GetPropertyChangedSignal("AbsoluteSize"):Connect(function()
+        sliderWidth = sliderBg.AbsoluteSize.X
+        -- Update slider based on current radius
+        local ratio = (radarRadius - CONFIG.MinRadius) / (CONFIG.MaxRadius - CONFIG.MinRadius)
+        updateSliderPosition(ratio)
+    end)
+
+    -- =====================================================================
+    -- NPC LIST PANEL
+    -- =====================================================================
+    local npcListFrame = Instance.new("Frame")
+    npcListFrame.Name = "NPCListFrame"
+    npcListFrame.Size = UDim2.new(1, -20, 0, 80)
+    npcListFrame.Position = UDim2.new(0, 10, 0, CONFIG.RadarSize + 128)
+    npcListFrame.BackgroundColor3 = Color3.fromRGB(22, 24, 30)
+    npcListFrame.BackgroundTransparency = 0.3
+    npcListFrame.BorderSizePixel = 0
+    npcListFrame.ClipsDescendants = true
+    npcListFrame.Parent = mainPanel
+
+    local npcListCorner = Instance.new("UICorner")
+    npcListCorner.CornerRadius = UDim.new(0, 8)
+    npcListCorner.Parent = npcListFrame
+
+    local npcListTitle = Instance.new("TextLabel")
+    npcListTitle.Name = "NPCListTitle"
+    npcListTitle.Size = UDim2.new(1, -10, 0, 18)
+    npcListTitle.Position = UDim2.new(0, 5, 0, 2)
+    npcListTitle.BackgroundTransparency = 1
+    npcListTitle.Text = "Nearby NPCs"
+    npcListTitle.TextColor3 = CONFIG.Colors.TitleText
+    npcListTitle.TextSize = 11
+    npcListTitle.TextFont = Enum.Font.GothamBold
+    npcListTitle.Font = Enum.Font.GothamBold
+    npcListTitle.TextXAlignment = Enum.TextXAlignment.Left
+    npcListTitle.TextYAlignment = Enum.TextYAlignment.Center
+    npcListTitle.Parent = npcListFrame
+
+    local npcListScrolling = Instance.new("ScrollingFrame")
+    npcListScrolling.Name = "NPCListScrolling"
+    npcListScrolling.Size = UDim2.new(1, -8, 1, -22)
+    npcListScrolling.Position = UDim2.new(0, 4, 0, 20)
+    npcListScrolling.BackgroundTransparency = 1
+    npcListScrolling.BorderSizePixel = 0
+    npcListScrolling.ScrollBarThickness = 4
+    npcListScrolling.ScrollBarImageColor3 = CONFIG.Colors.RadarBorder
+    npcListScrolling.CanvasSize = UDim2.new(0, 0, 0, 0)
+    npcListScrolling.AutomaticCanvasSize = Enum.AutomaticSize.Y
+    npcListScrolling.Parent = npcListFrame
+
+    local npcListLayout = Instance.new("UIListLayout")
+    npcListLayout.Padding = UDim.new(0, 2)
+    npcListLayout.HorizontalAlignment = Enum.HorizontalAlignment.Left
+    npcListLayout.VerticalAlignment = Enum.VerticalAlignment.Top
+    npcListLayout.SortOrder = Enum.SortOrder.LayoutOrder
+    npcListLayout.Parent = npcListScrolling
+
+    -- =====================================================================
+    -- RADAR UPDATE LOOP
+    -- =====================================================================
+    local blipPool = {} -- Pool of blip ImageLabels for reuse
+    local npcEntryPool = {} -- Pool of UI entries
+    local trackedNPCs = {}
+
+    -- Function to get or create a blip
+    local function getBlip()
+        local blip = table.remove(blipPool)
+        if not blip then
+            blip = Instance.new("ImageLabel")
+            blip.Name = "Blip"
+            blip.Size = UDim2.new(0, 8, 0, 8)
+            blip.BackgroundTransparency = 1
+            blip.Image = "rbxasset://textures/ui/GuiImagePlaceholder.png"
+            blip.ImageColor3 = CONFIG.Colors.NPCRed
+            blip.ImageTransparency = 0
+            blip.ZIndex = 8
+            blip.Parent = blipContainer
+
+            -- NPC Direction arrow inside blip
+            local npcArrow = Instance.new("TextLabel")
+            npcArrow.Name = "NPCDir"
+            npcArrow.Size = UDim2.new(1, 0, 1, 0)
+            npcArrow.BackgroundTransparency = 1
+            npcArrow.Text = "▲"
+            npcArrow.TextColor3 = Color3.fromRGB(255, 255, 255)
+            npcArrow.TextSize = 7
+            npcArrow.TextFont = Enum.Font.GothamBold
+            npcArrow.Font = Enum.Font.GothamBold
+            npcArrow.TextXAlignment = Enum.TextXAlignment.Center
+            npcArrow.TextYAlignment = Enum.TextYAlignment.Center
+            npcArrow.Parent = blip
+        end
+        blip.Visible = true
+        return blip
+    end
+
+    -- Return blip to pool
+    local function returnBlip(blip)
+        blip.Visible = false
+        table.insert(blipPool, blip)
+    end
+
+    -- Get or create NPC entry
+    local function getNPCEntry(npc)
+        local entry = table.remove(npcEntryPool)
+        if not entry then
+            entry = Instance.new("Frame")
+            entry.Name = "NPCEntry"
+            entry.Size = UDim2.new(1, 0, 0, 18)
+            entry.BackgroundTransparency = 1
+            entry.Parent = npcListScrolling
+
+            local dot = Instance.new("Frame")
+            dot.Name = "Dot"
+            dot.Size = UDim2.new(0, 6, 0, 6)
+            dot.Position = UDim2.new(0, 2, 0.5, -3)
+            dot.BackgroundColor3 = CONFIG.Colors.NPCRed
+            dot.BorderSizePixel = 0
+            dot.Parent = entry
+            local dotCorner = Instance.new("UICorner")
+            dotCorner.CornerRadius = UDim.new(0, 3)
+            dotCorner.Parent = dot
+
+            local nameLabel = Instance.new("TextLabel")
+            nameLabel.Name = "NameLabel"
+            nameLabel.Size = UDim2.new(0.5, -5, 1, 0)
+            nameLabel.Position = UDim2.new(0, 12, 0, 0)
+            nameLabel.BackgroundTransparency = 1
+            nameLabel.TextColor3 = CONFIG.Colors.DistanceText
+            nameLabel.TextSize = 10
+            nameLabel.TextFont = Enum.Font.Gotham
+            nameLabel.Font = Enum.Font.Gotham
+            nameLabel.TextXAlignment = Enum.TextXAlignment.Left
+            nameLabel.TextYAlignment = Enum.TextYAlignment.Center
+            nameLabel.TextTruncate = Enum.TextTruncate.AtEnd
+            nameLabel.Parent = entry
+
+            local distLabel = Instance.new("TextLabel")
+            distLabel.Name = "DistLabel"
+            distLabel.Size = UDim2.new(0.5, -5, 1, 0)
+            distLabel.Position = UDim2.new(0.5, 5, 0, 0)
+            distLabel.BackgroundTransparency = 1
+            distLabel.TextColor3 = CONFIG.Colors.DistanceText
+            distLabel.TextSize = 10
+            distLabel.TextFont = Enum.Font.Gotham
+            distLabel.Font = Enum.Font.Gotham
+            distLabel.TextXAlignment = Enum.TextXAlignment.Right
+            distLabel.TextYAlignment = Enum.TextYAlignment.Center
+            distLabel.Parent = entry
+        end
+        entry.Visible = true
+        return entry
+    end
+
+    -- Return entry to pool
+    local function returnNPCEntry(entry)
+        entry.Visible = false
+        table.insert(npcEntryPool, entry)
+    end
+
+    -- Clean all pools
+    local function clearBlips()
+        for _, blip in ipairs(blipContainer:GetChildren()) do
+            if blip.Name == "Blip" then
+                returnBlip(blip)
             end
         end
     end
-    
-    searchFolder(Workspace)
-    return npcs
-end
 
--- Slider functionality
-local function updateSlider(value)
-    if isLocked then return end
-    
-    value = math.clamp(value, MIN_RADIUS, MAX_RADIUS)
-    currentRadius = math.floor(value)
-    
-    local percent = (currentRadius - MIN_RADIUS) / (MAX_RADIUS - MIN_RADIUS)
-    SliderFill.Size = UDim2.new(percent, 0, 1, 0)
-    SliderKnob.Position = UDim2.new(percent, -8, 0.5, -8)
-    RadiusLabel.Text = "Radius: " .. currentRadius
-end
-
-local function handleSliderInput(input)
-    if isLocked then return end
-    
-    local sliderPos = SliderBar.AbsolutePosition
-    local sliderSize = SliderBar.AbsoluteSize
-    
-    local relativeX = math.clamp((input.Position.X - sliderPos.X) / sliderSize.X, 0, 1)
-    local newValue = MIN_RADIUS + (relativeX * (MAX_RADIUS - MIN_RADIUS))
-    updateSlider(newValue)
-end
-
-SliderBar.InputBegan:Connect(function(input)
-    if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
-        if not isLocked then
-            isDragging = true
-            handleSliderInput(input)
+    local function clearNPCEntries()
+        for _, entry in ipairs(npcListScrolling:GetChildren()) do
+            if entry.Name == "NPCEntry" then
+                returnNPCEntry(entry)
+            end
         end
     end
-end)
 
-SliderKnob.InputBegan:Connect(function(input)
-    if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
-        if not isLocked then
-            isDragging = true
+    -- =====================================================================
+    -- MAIN UPDATE FUNCTION
+    -- =====================================================================
+    local function UpdateRadar()
+        local player = Players.LocalPlayer
+        if not player then return end
+        local character = player.Character
+        if not character then return end
+
+        local humanoidRoot = character:FindFirstChild("HumanoidRootPart")
+        if not humanoidRoot then return end
+
+        local playerPos = humanoidRoot.Position
+        local playerCF = humanoidRoot.CFrame
+
+        -- Update compass
+        local dir, degreesVal = GetCompassDirection(playerCF)
+        compassLabel.Text = "N  ·  E  ·  S  ·  W"
+        directionIndicator.Text = dir
+        if dir == "N" then
+            directionIndicator.TextColor3 = CONFIG.Colors.CompassN
+        else
+            directionIndicator.TextColor3 = CONFIG.Colors.CompassEWS
         end
-    end
-end)
 
-UserInputService.InputChanged:Connect(function(input)
-    if isDragging and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then
-        handleSliderInput(input)
-    end
-end)
+        -- Update player arrow rotation
+        local lookVector = playerCF.LookVector
+        local playerAngle = math.deg(math.atan2(-lookVector.X, -lookVector.Z))
+        playerArrow.Rotation = playerAngle
 
-UserInputService.InputEnded:Connect(function(input)
-    if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
-        isDragging = false
-    end
-end)
-
--- Lock button
-LockButton.MouseButton1Click:Connect(function()
-    isLocked = not isLocked
-    LockButton.Text = isLocked and "🔒" or "🔓"
-    LockButton.BackgroundColor3 = isLocked and Color3.fromRGB(200, 50, 50) or Color3.fromRGB(50, 50, 50)
-    SliderKnob.BackgroundColor3 = isLocked and Color3.fromRGB(150, 150, 150) or Color3.fromRGB(255, 255, 255)
-end)
-
--- Toggle button
-ToggleButton.MouseButton1Click:Connect(function()
-    radarEnabled = not radarEnabled
-    ToggleButton.BackgroundColor3 = radarEnabled and Color3.fromRGB(0, 200, 0) or Color3.fromRGB(200, 0, 0)
-    RadarContainer.Visible = radarEnabled
-end)
-
--- Draggable main frame
-local draggingFrame = false
-local dragStart = nil
-local startPos = nil
-
-TitleBar.InputBegan:Connect(function(input)
-    if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
-        draggingFrame = true
-        dragStart = input.Position
-        startPos = MainFrame.Position
-    end
-end)
-
-TitleBar.InputEnded:Connect(function(input)
-    if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
-        draggingFrame = false
-    end
-end)
-
-UserInputService.InputChanged:Connect(function(input)
-    if draggingFrame and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then
-        local delta = input.Position - dragStart
-        MainFrame.Position = UDim2.new(
-            startPos.X.Scale,
-            startPos.X.Offset + delta.X,
-            startPos.Y.Scale,
-            startPos.Y.Offset + delta.Y
-        )
-    end
-end)
-
--- Main update loop
-RunService.RenderStepped:Connect(function()
-    if not radarEnabled then return end
-    
-    local character = LocalPlayer.Character
-    if not character then return end
-    
-    local humanoidRootPart = character:FindFirstChild("HumanoidRootPart")
-    if not humanoidRootPart then return end
-    
-    local playerPos = humanoidRootPart.Position
-    local playerLook = humanoidRootPart.CFrame.LookVector
-    local playerAngle = math.atan2(playerLook.X, playerLook.Z)
-    
-    -- Update compass
-    local compassAngle = math.deg(math.atan2(playerLook.X, playerLook.Z))
-    if compassAngle < 0 then compassAngle = compassAngle + 360 end
-    CompassLabel.Text = getCompassDirection(compassAngle)
-    
-    -- Update player arrow rotation
-    PlayerArrow.Rotation = 0
-    
-    -- Hide all dots first
-    hideAllDots()
-    
-    -- Get and display NPCs
-    local npcs = getNPCs()
-    
-    for _, npc in ipairs(npcs) do
-        local npcRoot = npc:FindFirstChild("HumanoidRootPart")
-        if npcRoot then
-            local npcPos = npcRoot.Position
-            local offset = npcPos - playerPos
-            local distance = offset.Magnitude
-            
-            if distance <= currentRadius then
-                local dot = getDot()
-                
-                -- Calculate position on radar
-                local relX = offset.X / currentRadius
-                local relZ = offset.Z / currentRadius
-                
-                -- Rotate based on player facing direction
-                local rotatedX = relX * math.cos(-playerAngle) - relZ * math.sin(-playerAngle)
-                local rotatedZ = relX * math.sin(-playerAngle) + relZ * math.cos(-playerAngle)
-                
-                -- Scale to radar size
-                local radarX = 0.5 + (rotatedX * 0.45)
-                local radarY = 0.5 - (rotatedZ * 0.45)
-                
-                -- Clamp to circle
-                local distFromCenter = math.sqrt((radarX - 0.5)^2 + (radarY - 0.5)^2)
-                if distFromCenter > 0.45 then
-                    local scale = 0.45 / distFromCenter
-                    radarX = 0.5 + (radarX - 0.5) * scale
-                    radarY = 0.5 + (radarY - 0.5) * scale
+        -- Find all NPCs
+        local npcs = {}
+        for _, descendant in ipairs(workspace:GetDescendants()) do
+            if IsNPC(descendant) then
+                local npcPos = GetNPCPosition(descendant)
+                if npcPos then
+                    local distance = (npcPos - playerPos).Magnitude
+                    if distance <= radarRadius then
+                        table.insert(npcs, {
+                            Instance = descendant,
+                            Position = npcPos,
+                            Distance = distance,
+                            Direction = GetNPCDirection(descendant)
+                        })
+                    end
                 end
-                
-                dot.Position = UDim2.new(radarX, -6, radarY, -6)
-                
-                -- Color based on distance
-                if distance <= CLOSE_DISTANCE then
-                    dot.BackgroundColor3 = Color3.fromRGB(255, 50, 50)
+            end
+        end
+
+        -- Sort by distance
+        table.sort(npcs, function(a, b)
+            return a.Distance < b.Distance
+        end)
+
+        -- Clear old blips and entries
+        clearBlips()
+        clearNPCEntries()
+
+        -- Scale factor: radar half-size / radius
+        local halfRadar = CONFIG.RadarSize / 2
+        local scale = halfRadar / radarRadius
+
+        -- Place blips
+        for _, npcData in ipairs(npcs) do
+            local npc = npcData.Instance
+            local npcPos = npcData.Position
+            local distance = npcData.Distance
+            local npcAngle = npcData.Direction
+
+            local relativePos = npcPos - playerPos
+            -- Rotate relative position by player's inverse rotation
+            local playerYaw = math.atan2(-lookVector.X, -lookVector.Z)
+            local cosA = math.cos(playerYaw)
+            local sinA = math.sin(playerYaw)
+            local rotatedX = relativePos.X * cosA - relativePos.Z * sinA
+            local rotatedZ = relativePos.X * sinA + relativePos.Z * cosA
+
+            -- Negate Z for screen coordinates (forward = up on screen)
+            local screenX = rotatedX * scale
+            local screenY = -rotatedZ * scale
+
+            -- Clamp to radar bounds (circle)
+            local blipRadius = math.sqrt(screenX * screenX + screenY * screenY)
+            local maxBlipRadius = halfRadar - 6
+            if blipRadius > maxBlipRadius then
+                screenX = screenX / blipRadius * maxBlipRadius
+                screenY = screenY / blipRadius * maxBlipRadius
+                blipRadius = maxBlipRadius
+            end
+
+            -- Get or create blip
+            local blip = getBlip()
+            blip.Position = UDim2.new(0.5, screenX - 4, 0.5, screenY - 4)
+
+            -- Set color based on distance
+            if distance <= CONFIG.DistanceThreshold then
+                blip.ImageColor3 = CONFIG.Colors.NPCRed
+            else
+                blip.ImageColor3 = CONFIG.Colors.NPCOrange
+            end
+
+            -- Set NPC direction arrow rotation
+            local npcDirArrow = blip:FindFirstChild("NPCDir")
+            if npcDirArrow then
+                local npcAngleDeg = math.deg(npcAngle)
+                -- Adjust: NPC angle relative to player's view
+                npcDirArrow.Rotation = npcAngleDeg - playerAngle
+            end
+
+            -- Create list entry
+            local entry = getNPCEntry(npc)
+            local dot = entry:FindFirstChild("Dot")
+            local nameLabel = entry:FindFirstChild("NameLabel")
+            local distLabel = entry:FindFirstChild("DistLabel")
+
+            if dot then
+                if distance <= CONFIG.DistanceThreshold then
+                    dot.BackgroundColor3 = CONFIG.Colors.NPCRed
                 else
-                    dot.BackgroundColor3 = Color3.fromRGB(255, 165, 0)
+                    dot.BackgroundColor3 = CONFIG.Colors.NPCOrange
                 end
-                
-                -- NPC direction indicator
-                local npcLook = npcRoot.CFrame.LookVector
-                local npcAngle = math.deg(math.atan2(npcLook.X, npcLook.Z))
-                local relativeAngle = npcAngle - math.deg(playerAngle)
-                dot.Rotation = -relativeAngle
-                
-                -- Distance label
-                dot.Distance.Text = math.floor(distance) .. "m"
-                
-                dot.Visible = true
+            end
+            if nameLabel then
+                local npcName = npc.Name
+                if #npcName > 18 then
+                    npcName = npcName:sub(1, 16) .. ".."
+                end
+                nameLabel.Text = npcName
+            end
+            if distLabel then
+                distLabel.Text = RoundNumber(distance) .. "m"
             end
         end
     end
-end)
 
-print("NPC Radar loaded successfully!")
-print("Drag the title bar to move the radar")
-print("Use the slider to adjust radius (default: 150, max: 500)")
-print("Click the lock icon to lock/unlock the slider")
-print("Click the green dot to toggle radar on/off")
+    -- =====================================================================
+    -- START THE UPDATE LOOP
+    -- =====================================================================
+    coroutine.wrap(function()
+        while true do
+            pcall(UpdateRadar)
+            task.wait(CONFIG.RefreshRate)
+        end
+    end)()
+
+    -- =====================================================================
+    -- CHARACTER RESPAWN HANDLING
+    -- =====================================================================
+    player.CharacterAdded:Connect(function(newChar)
+        -- Wait a bit for character to load
+        task.wait(1)
+    end)
+
+    -- =====================================================================
+    -- RETURN GUI
+    -- =====================================================================
+    return gui
+end
+
+-- =====================================================================
+-- AUTO-START
+-- =====================================================================
+local success, err = pcall(CreateRadar)
+if not success then
+    warn("[NPC Radar] Failed to load: " .. tostring(err))
+    -- Retry after a short delay
+    task.wait(1)
+    pcall(CreateRadar)
+end
